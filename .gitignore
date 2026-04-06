@@ -5,6 +5,7 @@ __pycache__/
 .venv/
 
 data/derived/
+data/templates/
 app/streamlit.log
 
 *.pyc
