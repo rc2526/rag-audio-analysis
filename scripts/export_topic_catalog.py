@@ -2,7 +2,12 @@
 import csv
 
 from rag_audio_analysis.config import TOPIC_CATALOG_CSV
-from rag_audio_analysis.source_bridge import infer_week_num, load_topic_entries
+from rag_audio_analysis.source_bridge import (
+    get_session_summary,
+    get_topic_definition,
+    infer_week_num,
+    load_topic_entries,
+)
 
 FIELDNAMES = [
     "topic_id",
@@ -27,15 +32,17 @@ def main() -> None:
         writer.writeheader()
         for topic in topics:
             label = topic["label"]
+            session_num = str(topic.get("session_num", "") or "")
+            session_summary = get_session_summary(session_num).get("session_summary", "")
             writer.writerow(
                 {
                     "topic_id": topic["id"],
                     "topic_label": label,
-                    "session_num": topic.get("session_num", ""),
+                    "session_num": session_num,
                     "session_label": topic.get("session_label", ""),
-                    "manual_week": topic.get("session_num", "") or infer_week_num(label),
+                    "manual_week": session_num or infer_week_num(label),
                     "manual_session_title": topic.get("session_label", ""),
-                    "topic_definition": "",
+                    "topic_definition": get_topic_definition(topic["id"], label, session_summary),
                     "primary_skill": "",
                     "secondary_skill": "",
                     "manual_priority": "core",

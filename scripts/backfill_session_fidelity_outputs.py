@@ -8,7 +8,6 @@ import pandas as pd
 from rag_audio_analysis.config import CYCLE_ANALYSIS_DIR, TOPIC_CATALOG_CSV
 from rag_audio_analysis.settings import get_float, get_int, get_str
 from rag_audio_analysis.source_bridge import (
-    build_session_fidelity_query,
     build_doc_index_by_path,
     expand_transcript_context,
     get_manual_units_for_session,
@@ -75,13 +74,15 @@ def build_session_fidelity_for_cycle(
         session_summary = session_summary_row.get("session_summary", "")
         topic_ids = [x for x in session_topics["topic_id"].astype(str).tolist() if x]
         topic_labels = [x for x in session_topics["topic_label"].astype(str).tolist() if x]
-        fidelity_query = build_session_fidelity_query(session_num, session_summary, topic_labels)
-
-        dynamic_topk = len(session_manual_units) or fidelity_topk
+        fidelity_query = session_summary or get_str(
+            "fidelity",
+            "fidelity_query_template",
+            "Session {session_num} {topic_label}",
+        ).format(session_num=session_num, topic_label=" ; ".join(topic_labels)).strip()
 
         raw_results = query_evidence(
             fidelity_query,
-            topk=dynamic_topk,
+            topk=fidelity_topk,
             weight_doc=fidelity_weight_doc,
             weight_topic=fidelity_weight_topic,
             cycle_id=cycle_dir.name,

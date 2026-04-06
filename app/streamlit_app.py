@@ -12,7 +12,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from rag_audio_analysis.chat_runner import run_chat_query
-from rag_audio_analysis.config import CYCLE_ANALYSIS_DIR, MANUAL_UNITS_CSV, SESSION_SUMMARIES_CSV, TOPIC_CATALOG_CSV
+from rag_audio_analysis.config import CYCLE_ANALYSIS_DIR, MANUAL_UNITS_CSV, TOPIC_CATALOG_CSV
 from rag_audio_analysis.settings import get_float, get_int, get_str
 
 
@@ -24,7 +24,6 @@ APP_CAPTION = get_str(
 )
 CYCLE_PREFIX = get_str("ui", "cycle_prefix", "PMHCycle")
 UI_EXCERPT_CHARS = get_int("prompting", "ui_excerpt_chars", 280)
-TOPIC_DEFINITION_EXCERPT_CHARS = 320
 
 st.set_page_config(page_title=APP_TITLE, layout="wide")
 st.title(APP_TITLE)
@@ -32,6 +31,7 @@ st.caption(APP_CAPTION)
 
 
 QUESTION_LABELS = {
+    "facilitator_delivery": "Facilitator delivery",
     "facilitator_reference": "Facilitator reference",
     "facilitator_demonstration": "Facilitator demonstration",
     "participant_practice": "Participant practice",
@@ -48,6 +48,12 @@ ADHERENCE_LABELS = {
     "high": "High adherence estimate",
     "moderate": "Moderate adherence estimate",
     "low": "Low adherence estimate",
+}
+
+ADJUDICATION_LABELS = {
+    "high": "High Generation Grade",
+    "moderate": "Moderate Generation Grade",
+    "low": "Low Generation Grade",
 }
 
 
@@ -123,6 +129,8 @@ def add_readable_columns(df: pd.DataFrame) -> pd.DataFrame:
         view["Analysis mode"] = view["analysis_mode"].astype(str).map(lambda x: human_label(x, ANALYSIS_MODE_LABELS))
     if "adherence_label" in view.columns:
         view["Adherence"] = view["adherence_label"].astype(str).map(lambda x: human_label(x, ADHERENCE_LABELS))
+    if "adjudication_label" in view.columns:
+        view["Generation Grade"] = view["adjudication_label"].astype(str).map(lambda x: human_label(x, ADJUDICATION_LABELS))
 
     rename_map = {
         "cycle_id": "Cycle",
@@ -148,6 +156,10 @@ def add_readable_columns(df: pd.DataFrame) -> pd.DataFrame:
         "matched_manual_unit_ids": "Matched manual units",
         "matched_subsections": "Matched subsections",
         "sample_session_ids": "Transcript files",
+        "adjudication_summary": "Generation Grade summary",
+        "adjudication_confidence": "Generation confidence",
+        "adjudication_evidence_refs": "Generation evidence refs",
+        "adjudication_manual_unit_ids": "Generation manual units",
         "query_text": "Query text",
         "answer_summary": "Automated answer",
         "confidence": "Model confidence",
@@ -174,162 +186,6 @@ def add_readable_columns(df: pd.DataFrame) -> pd.DataFrame:
     return view.rename(columns={k: v for k, v in rename_map.items() if k in view.columns})
 
 
-TOPIC_DEFINITION_STOPWORDS = {
-    "a",
-    "an",
-    "and",
-    "are",
-    "as",
-    "at",
-    "be",
-    "by",
-    "for",
-    "from",
-    "how",
-    "in",
-    "into",
-    "is",
-    "it",
-    "its",
-    "of",
-    "on",
-    "or",
-    "session",
-    "the",
-    "this",
-    "to",
-    "using",
-    "with",
-}
-
-
-def tokenize_topic_text(text: str) -> list[str]:
-    return [
-        token
-        for token in re.findall(r"[a-z0-9]+", str(text or "").lower())
-        if token and token not in TOPIC_DEFINITION_STOPWORDS
-    ]
-
-
-def split_summary_sentences(text: str) -> list[str]:
-    parts = re.split(r"(?<=[.!?])\s+", str(text or "").strip())
-    return [part.strip() for part in parts if part.strip()]
-
-
-def normalize_topic_label(topic_label: str) -> str:
-    label = str(topic_label or "").strip()
-    if not label:
-        return ""
-    label = label[0].lower() + label[1:]
-    label = re.sub(r"\bPA\b", "physical activity", label)
-    return label
-
-
-def clean_summary_fragment(text: str) -> str:
-    fragment = str(text or "").strip(" ,.;:")
-    replacements = [
-        r"^the session focuses on\s+",
-        r"^the session deepens\s+",
-        r"^the session also focuses on\s+",
-        r"^participants are introduced to\s+",
-        r"^participants discuss\s+",
-        r"^participants reflect on\s+",
-        r"^experiential practice includes\s+",
-        r"^additional experiential practice includes\s+",
-        r"^homework emphasizes\s+",
-        r"^the nutrition and physical activity component focuses on\s+",
-        r"^the nutrition component focuses on\s+",
-    ]
-    for pattern in replacements:
-        fragment = re.sub(pattern, "", fragment, flags=re.IGNORECASE)
-    return fragment.strip(" ,.;:")
-
-
-def sentence_fragments(text: str) -> list[str]:
-    fragments: list[str] = []
-    for sentence in split_summary_sentences(text):
-        parts = re.split(r";|, followed by |, with |, and ", sentence)
-        for part in parts:
-            cleaned = clean_summary_fragment(part)
-            if cleaned:
-                fragments.append(cleaned)
-    return fragments
-
-
-def choose_topic_context_fragments(topic_label: str, session_summary: str) -> list[str]:
-    topic_tokens = set(tokenize_topic_text(topic_label))
-    scored_fragments: list[tuple[int, int, str]] = []
-    for idx, fragment in enumerate(sentence_fragments(session_summary)):
-        fragment_tokens = set(tokenize_topic_text(fragment))
-        overlap = len(topic_tokens & fragment_tokens)
-        bonus = 1 if normalize_topic_label(topic_label) in fragment.lower() else 0
-        score = overlap * 3 + bonus
-        scored_fragments.append((score, -idx, fragment))
-
-    scored_fragments.sort(reverse=True)
-    chosen = [fragment for score, _, fragment in scored_fragments if score > 0][:2]
-    if chosen:
-        return chosen
-    fallback = [clean_summary_fragment(sentence) for sentence in split_summary_sentences(session_summary)[:2]]
-    return [fragment for fragment in fallback if fragment]
-
-
-def derive_topic_definition(topic_label: str, session_summary: str) -> str:
-    topic_label = str(topic_label or "").strip()
-    session_summary = str(session_summary or "").strip()
-    if not topic_label:
-        return get_excerpt(session_summary, TOPIC_DEFINITION_EXCERPT_CHARS)
-    if not session_summary:
-        return f"Focuses on {normalize_topic_label(topic_label)} in this session."
-
-    topic_phrase = normalize_topic_label(topic_label)
-    context_fragments = choose_topic_context_fragments(topic_label, session_summary)
-    context_text = "; ".join(context_fragments).strip()
-    if not context_text:
-        context_text = clean_summary_fragment(session_summary)
-
-    gloss = f"Focuses on {topic_phrase} in the context of {context_text}."
-    gloss = re.sub(r"\s+", " ", gloss).strip()
-    return get_excerpt(gloss, TOPIC_DEFINITION_EXCERPT_CHARS)
-
-
-def build_topic_catalog_for_display(topic_catalog: pd.DataFrame) -> pd.DataFrame:
-    if topic_catalog.empty:
-        return topic_catalog
-
-    session_summaries = load_csv(SESSION_SUMMARIES_CSV)
-    if session_summaries.empty:
-        view = topic_catalog.copy()
-        if "topic_definition" in view.columns:
-            view["topic_definition"] = view.apply(
-                lambda row: row["topic_definition"]
-                if str(row.get("topic_definition", "")).strip()
-                else f"This topic centers on {str(row.get('topic_label', '')).strip().lower()}."
-                if str(row.get("topic_label", "")).strip()
-                else "",
-                axis=1,
-            )
-        return view
-
-    view = topic_catalog.copy()
-    summary_lookup = {
-        str(row.get("session_num", "")).strip(): str(row.get("session_summary", "")).strip()
-        for _, row in session_summaries.iterrows()
-    }
-    if "topic_definition" not in view.columns:
-        view["topic_definition"] = ""
-
-    view["topic_definition"] = view.apply(
-        lambda row: str(row.get("topic_definition", "")).strip()
-        or derive_topic_definition(
-            str(row.get("topic_label", "")).strip(),
-            summary_lookup.get(str(row.get("session_num", "")).strip(), ""),
-        ),
-        axis=1,
-    )
-    return view
-
-
 def render_key() -> None:
     with st.expander("How to read this app", expanded=False):
         st.markdown("**What is shown here**")
@@ -347,7 +203,7 @@ def render_key() -> None:
 
 
 manual_units = load_csv(MANUAL_UNITS_CSV)
-topic_catalog = build_topic_catalog_for_display(load_csv(TOPIC_CATALOG_CSV))
+topic_catalog = load_csv(TOPIC_CATALOG_CSV)
 cycle_ids = list_cycle_ids()
 
 all_fidelity = load_all_cycle_files("fidelity_summary.csv")
@@ -470,6 +326,8 @@ with tab1:
             "evidence_density",
             "adherence_score",
             "adherence_label",
+            "adjudication_label",
+            "adjudication_confidence",
         ]
         st.dataframe(
             add_readable_columns(session_fidelity_view[[col for col in overview_cols if col in session_fidelity_view.columns]]),
@@ -503,6 +361,9 @@ with tab2:
                         "evidence_density",
                         "adherence_score",
                         "adherence_label",
+                        "adjudication_label",
+                        "adjudication_confidence",
+                        "adjudication_summary",
                     ]
                 ].sort_values(["cycle_id", "manual_session_num"])
             ),
@@ -524,14 +385,45 @@ with tab2:
         d3.metric("Evidence density", row.get("evidence_density", ""))
         d4.metric("Adherence", human_label(str(row.get("adherence_label", "")), ADHERENCE_LABELS))
 
+        generated_label = str(row.get("adjudication_label", "") or "").strip()
+        generated_confidence = str(row.get("adjudication_confidence", "") or "").strip()
+        if generated_label or generated_confidence:
+            g1, g2 = st.columns(2)
+            with g1:
+                st.metric("Generation Grade", human_label(generated_label, ADJUDICATION_LABELS) if generated_label else "N/A")
+            with g2:
+                st.metric("Generation confidence", generated_confidence or "N/A")
+
         st.markdown("**Fidelity query**")
         st.code(str(row.get("fidelity_query", "")))
         st.markdown("**Session summary used for retrieval**")
         st.write(str(row.get("session_summary", "")) or "No session summary is saved yet for this manual session.")
 
+        generated_summary = str(row.get("adjudication_summary", "") or "").strip()
+        if generated_summary:
+            st.markdown("**Generation Grade summary**")
+            st.write(generated_summary)
+            st.markdown("**Generation evidence refs**")
+            st.write(str(row.get("adjudication_evidence_refs", "")) or "None")
+            st.markdown("**Generation manual units cited**")
+            st.write(str(row.get("adjudication_manual_unit_ids", "")) or "None")
+            with st.expander("Show Generation Grade prompt", expanded=False):
+                st.text_area(
+                    "Generation Grade prompt",
+                    value=str(row.get("adjudication_prompt_text", "")),
+                    height=320,
+                    disabled=True,
+                    label_visibility="collapsed",
+                )
+            with st.expander("Show Generation Grade raw JSON", expanded=False):
+                st.code(str(row.get("adjudication_raw_response", "")), language="json")
+
         matched_ids = [x for x in str(row.get("matched_manual_unit_ids", "")).split(";") if x]
         expected_units = manual_units.copy()
-        expected_units = expected_units[expected_units["manual_week"].astype(str) == str(row.get("manual_session_num", ""))]
+        if "manual_week" in expected_units.columns:
+            expected_units = expected_units[expected_units["manual_week"].astype(str) == str(row.get("manual_session_num", ""))]
+        else:
+            expected_units = expected_units.iloc[0:0]
 
         c1, c2 = st.columns(2)
         with c1:
@@ -680,11 +572,23 @@ with tab3:
             q3.metric("Question", human_label(str(row.get("question_id", "")), QUESTION_LABELS))
 
             st.markdown("**Query text**")
-            st.code(str(row.get("query_text", "")))
+            st.text_area(
+                "PI query text",
+                value=str(row.get("query_text", "")),
+                height=180,
+                disabled=True,
+                label_visibility="collapsed",
+            )
             st.markdown("**Full model prompt**")
             prompt_text = str(row.get("prompt_text", ""))
             if prompt_text:
-                st.code(prompt_text)
+                st.text_area(
+                    "Full model prompt",
+                    value=prompt_text,
+                    height=320,
+                    disabled=True,
+                    label_visibility="collapsed",
+                )
             else:
                 st.info("This row was generated before prompt capture was added, so no saved prompt is available yet.")
             st.markdown("**Automated answer**")

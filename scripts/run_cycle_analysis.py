@@ -3,7 +3,6 @@ import argparse
 import csv
 import json
 import os
-import re
 import shlex
 import subprocess
 from pathlib import Path
@@ -12,12 +11,14 @@ from typing import Any, Optional
 from rag_audio_analysis.config import CYCLE_ANALYSIS_DIR
 from rag_audio_analysis.settings import get_float, get_int, get_list, get_str
 from rag_audio_analysis.source_bridge import (
-    build_session_fidelity_query,
     build_doc_index_by_path,
+    build_pi_query_text,
+    build_session_fidelity_query,
     expand_transcript_context,
     get_manual_units_for_session,
     get_rag_index_rows,
     get_session_summary,
+    get_topic_definition,
     get_topic_entries_for_session,
     infer_manual_unit_for_text,
     infer_session_id,
@@ -27,14 +28,9 @@ from rag_audio_analysis.source_bridge import (
 
 PI_QUESTION_SPECS = [
     {
-        "question_id": "facilitator_reference",
-        "label": get_str("pi_questions", "facilitator_reference_label", "How often do facilitators refer to this topic?"),
-        "query_template": get_str("pi_questions", "facilitator_reference_query", "Session {session_num} {topic_label}. Facilitator introducing, teaching, reviewing, or cueing this topic."),
-    },
-    {
-        "question_id": "facilitator_demonstration",
-        "label": get_str("pi_questions", "facilitator_demonstration_label", "How do facilitators demonstrate this skill?"),
-        "query_template": get_str("pi_questions", "facilitator_demonstration_query", "Session {session_num} {topic_label}. Facilitator modeling, guiding, demonstrating, or leading practice of this skill."),
+        "question_id": "facilitator_delivery",
+        "label": get_str("pi_questions", "facilitator_delivery_label", "How do facilitators introduce, reinforce, or demonstrate this topic or skill?"),
+        "query_template": get_str("pi_questions", "facilitator_delivery_query", "Session {session_num} {topic_label}. Facilitator introducing, teaching, reviewing, cueing, modeling, guiding, demonstrating, or leading practice related to this topic or skill."),
     },
     {
         "question_id": "participant_practice",
@@ -47,34 +43,6 @@ PI_QUESTION_SPECS = [
         "query_template": get_str("pi_questions", "participant_child_home_query", "Session {session_num} {topic_label}. Participant describing using this skill with their child at home."),
     },
 ]
-
-TOPIC_DEFINITION_STOPWORDS = {
-    "a",
-    "an",
-    "and",
-    "are",
-    "as",
-    "at",
-    "be",
-    "by",
-    "for",
-    "from",
-    "how",
-    "in",
-    "into",
-    "is",
-    "it",
-    "its",
-    "of",
-    "on",
-    "or",
-    "session",
-    "the",
-    "this",
-    "to",
-    "using",
-    "with",
-}
 
 
 def ensure_dir(path: Path) -> None:
@@ -139,126 +107,6 @@ def format_evidence_excerpt(text: str, limit: int | None = None) -> str:
     if len(text) <= limit:
         return text
     return text[:limit].rstrip() + "..."
-
-
-def tokenize_topic_text(text: str) -> list[str]:
-    return [
-        token
-        for token in re.findall(r"[a-z0-9]+", str(text or "").lower())
-        if token and token not in TOPIC_DEFINITION_STOPWORDS
-    ]
-
-
-def split_summary_sentences(text: str) -> list[str]:
-    parts = re.split(r"(?<=[.!?])\s+", str(text or "").strip())
-    return [part.strip() for part in parts if part.strip()]
-
-
-def normalize_topic_label(topic_label: str) -> str:
-    label = str(topic_label or "").strip()
-    if not label:
-        return ""
-    label = label[0].lower() + label[1:]
-    label = re.sub(r"\bPA\b", "physical activity", label)
-    return label
-
-
-def clean_summary_fragment(text: str) -> str:
-    fragment = str(text or "").strip(" ,.;:")
-    replacements = [
-        r"^the session focuses on\s+",
-        r"^the session deepens\s+",
-        r"^the session also focuses on\s+",
-        r"^participants are introduced to\s+",
-        r"^participants discuss\s+",
-        r"^participants reflect on\s+",
-        r"^experiential practice includes\s+",
-        r"^additional experiential practice includes\s+",
-        r"^homework emphasizes\s+",
-        r"^the nutrition and physical activity component focuses on\s+",
-        r"^the nutrition component focuses on\s+",
-    ]
-    for pattern in replacements:
-        fragment = re.sub(pattern, "", fragment, flags=re.IGNORECASE)
-    return fragment.strip(" ,.;:")
-
-
-def sentence_fragments(text: str) -> list[str]:
-    fragments: list[str] = []
-    for sentence in split_summary_sentences(text):
-        parts = re.split(r";|, followed by |, with |, and ", sentence)
-        for part in parts:
-            cleaned = clean_summary_fragment(part)
-            if cleaned:
-                fragments.append(cleaned)
-    return fragments
-
-
-def choose_topic_context_fragments(topic_label: str, session_summary: str) -> list[str]:
-    topic_tokens = set(tokenize_topic_text(topic_label))
-    scored_fragments: list[tuple[int, int, str]] = []
-    for idx, fragment in enumerate(sentence_fragments(session_summary)):
-        fragment_tokens = set(tokenize_topic_text(fragment))
-        overlap = len(topic_tokens & fragment_tokens)
-        bonus = 1 if normalize_topic_label(topic_label) in fragment.lower() else 0
-        score = overlap * 3 + bonus
-        scored_fragments.append((score, -idx, fragment))
-
-    scored_fragments.sort(reverse=True)
-    chosen = [fragment for score, _, fragment in scored_fragments if score > 0][:2]
-    if chosen:
-        return chosen
-    fallback = [clean_summary_fragment(sentence) for sentence in split_summary_sentences(session_summary)[:2]]
-    return [fragment for fragment in fallback if fragment]
-
-
-def derive_topic_definition(topic_label: str, session_summary: str) -> str:
-    topic_label = str(topic_label or "").strip()
-    session_summary = str(session_summary or "").strip()
-    if not topic_label:
-        return format_evidence_excerpt(session_summary, 320)
-    if not session_summary:
-        return f"Focuses on {normalize_topic_label(topic_label)} in this session."
-
-    context_fragments = choose_topic_context_fragments(topic_label, session_summary)
-    context_text = "; ".join(context_fragments).strip() or clean_summary_fragment(session_summary)
-    gloss = f"Focuses on {normalize_topic_label(topic_label)} in the context of {context_text}."
-    gloss = re.sub(r"\s+", " ", gloss).strip()
-    return format_evidence_excerpt(gloss, 320)
-
-
-def build_pi_question_query(
-    session_num: str,
-    topic: dict[str, str],
-    question_spec: dict[str, str],
-) -> str:
-    topic_label = str(topic.get("label", "")).strip()
-    session_summary_row = get_session_summary(session_num)
-    session_summary = str(session_summary_row.get("session_summary", "")).strip()
-    topic_definition = derive_topic_definition(topic_label, session_summary)
-    retrieval_focus = question_spec["query_template"].format(session_num=session_num, topic_label=topic_label).strip()
-
-    parts = [
-        f"Session {session_num}. Topic: {topic_label}.",
-        "",
-        "Topic definition:",
-        topic_definition,
-        "",
-        "Question:",
-        question_spec["label"],
-        "",
-        "Retrieval focus:",
-        retrieval_focus,
-    ]
-    if session_summary:
-        parts.extend(
-            [
-                "",
-                "Session summary context:",
-                format_evidence_excerpt(session_summary, 500),
-            ]
-        )
-    return "\n".join(parts).strip()
 
 
 def build_transcript_windows(
@@ -329,15 +177,18 @@ def build_session_fidelity_windows(
     window: int,
 ) -> list[dict[str, Any]]:
     session_manual_units = get_manual_units_for_session(session_num)
-    dynamic_topk = len(session_manual_units) or topk
     topic_labels = [str(topic.get("label", "")).strip() for topic in session_topics if str(topic.get("label", "")).strip()]
-    query_text = build_session_fidelity_query(session_num, session_summary, topic_labels)
+    query_text = build_session_fidelity_query(
+        session_num=session_num,
+        session_summary=session_summary,
+        topic_labels=topic_labels,
+    )
     return build_transcript_windows(
         query_text=query_text,
         topic_id="",
         session_num=session_num,
         cycle_id=cycle_id,
-        topk=dynamic_topk,
+        topk=topk,
         weight_doc=weight_doc,
         weight_topic=weight_topic,
         meta_rows=meta_rows,
@@ -434,7 +285,11 @@ def summarize_session_fidelity(
     topic_ids = [str(topic.get("id", "")).strip() for topic in topics if str(topic.get("id", "")).strip()]
     topic_labels = [str(topic.get("label", "")).strip() for topic in topics if str(topic.get("label", "")).strip()]
     session_summary = session_summary_row.get("session_summary", "")
-    fidelity_query = build_session_fidelity_query(session_num, session_summary, topic_labels)
+    fidelity_query = build_session_fidelity_query(
+        session_num=session_num,
+        session_summary=session_summary,
+        topic_labels=topic_labels,
+    )
 
     return {
         "cycle_id": cycle_id,
@@ -516,12 +371,177 @@ def build_question_prompt(
     return "\n".join(parts)
 
 
+def build_fidelity_adjudication_prompt(
+    cycle_id: str,
+    session_num: str,
+    manual_units: list[dict[str, Any]],
+    evidence_rows: list[dict[str, Any]],
+    *,
+    scope_label: str,
+    scope_description: str,
+    include_all_manual_units: bool = False,
+) -> str:
+    manual_unit_limit = len(manual_units) if include_all_manual_units else get_int("prompting", "manual_units_in_prompt", 6)
+    manual_excerpt_chars = get_int("prompting", "manual_excerpt_chars", 220)
+    evidence_excerpt_chars = get_int("prompting", "evidence_excerpt_chars", 400)
+
+    parts = [
+        "You are adjudicating manual adherence from retrieved transcript evidence only.",
+        "Return valid JSON only.",
+        "",
+        f"Cycle: {cycle_id}",
+        f"Session: Session {session_num}",
+        f"Scope: {scope_label}",
+        f"Task: {scope_description}",
+        "",
+        "Expected manual units for this scope:",
+    ]
+    if manual_units:
+        for unit in manual_units[:manual_unit_limit]:
+            parts.append(
+                f"- {unit['manual_unit_id']} | {unit.get('manual_subsection', '')} | "
+                f"{format_evidence_excerpt(unit.get('text', ''), manual_excerpt_chars)}"
+            )
+    else:
+        parts.append("- No matching manual units were available.")
+    parts.append("")
+    parts.append("Retrieved transcript evidence:")
+    if evidence_rows:
+        for idx, row in enumerate(evidence_rows, start=1):
+            parts.append(
+                f"- E{idx} | session_id={row.get('session_id','')} | "
+                f"manual_unit={row.get('manual_unit_id_best_match','')} | "
+                f"{format_evidence_excerpt(row.get('text', ''), evidence_excerpt_chars)}"
+            )
+    else:
+        parts.append("- No retrieved evidence windows were available.")
+    parts.extend(
+        [
+            "",
+            "Respond with JSON with exactly these keys:",
+            "{",
+            '  "adjudication_summary": "short paragraph",',
+            '  "adherence_label": "high|moderate|low",',
+            '  "evidence_refs": ["E1"],',
+            '  "manual_unit_ids": ["MAN_0001"],',
+            '  "confidence": "low|medium|high"',
+            "}",
+            "Base the judgment only on the retrieved evidence and expected manual units shown above.",
+            "Use 'low' adherence when evidence is weak or clearly incomplete.",
+        ]
+    )
+    return "\n".join(parts)
+
+
+def build_topic_fidelity_adjudication_prompt(
+    cycle_id: str,
+    session_num: str,
+    topic: dict[str, str],
+    manual_units: list[dict[str, Any]],
+    evidence_rows: list[dict[str, Any]],
+) -> str:
+    return build_fidelity_adjudication_prompt(
+        cycle_id,
+        session_num,
+        manual_units,
+        evidence_rows,
+        scope_label=topic.get("label", ""),
+        scope_description=(
+            f"Judge how well the retrieved evidence reflects delivery of the manual topic "
+            f"'{topic.get('label', '')}' for this session."
+        ),
+    )
+
+
+def build_session_fidelity_adjudication_prompt(
+    cycle_id: str,
+    session_num: str,
+    topics: list[dict[str, str]],
+    manual_units: list[dict[str, Any]],
+    evidence_rows: list[dict[str, Any]],
+) -> str:
+    topic_labels = [str(topic.get("label", "")).strip() for topic in topics if str(topic.get("label", "")).strip()]
+    scope_label = f"Session {session_num} manual content"
+    if topic_labels:
+        scope_label = f"{scope_label} ({'; '.join(topic_labels)})"
+    return build_fidelity_adjudication_prompt(
+        cycle_id,
+        session_num,
+        manual_units,
+        evidence_rows,
+        scope_label=scope_label,
+        scope_description="Judge how well the retrieved evidence reflects the overall manual-session content for this session.",
+        include_all_manual_units=True,
+    )
+
+
+def fidelity_generation_fields(payload: dict[str, Any], prompt_text: str) -> dict[str, str]:
+    evidence_refs = ";".join(payload.get("evidence_refs", [])) if isinstance(payload.get("evidence_refs"), list) else ""
+    manual_ids = ";".join(payload.get("manual_unit_ids", [])) if isinstance(payload.get("manual_unit_ids"), list) else ""
+    return {
+        "adjudication_prompt_text": prompt_text,
+        "adjudication_summary": str(payload.get("adjudication_summary", "") or ""),
+        "adjudication_label": str(payload.get("adherence_label", "") or ""),
+        "adjudication_confidence": str(payload.get("confidence", "") or ""),
+        "adjudication_evidence_refs": evidence_refs,
+        "adjudication_manual_unit_ids": manual_ids,
+        "adjudication_raw_response": json.dumps(payload, ensure_ascii=False) if payload else "",
+    }
+
+
 def write_csv(path: Path, fieldnames: list[str], rows: list[dict[str, Any]]) -> None:
     with open(path, "w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
         for row in rows:
             writer.writerow({key: row.get(key, "") for key in fieldnames})
+
+
+def read_csv_rows(path: Path) -> list[dict[str, str]]:
+    if not path.exists():
+        return []
+    with open(path, newline="", encoding="utf-8") as handle:
+        return list(csv.DictReader(handle))
+
+
+def filter_cycle_rows(
+    rows: list[dict[str, Any]],
+    predicate,
+) -> list[dict[str, Any]]:
+    return [row for row in rows if not predicate(row)]
+
+
+def filter_cycle_json_rows(
+    rows: list[dict[str, Any]],
+    predicate,
+) -> list[dict[str, Any]]:
+    return [row for row in rows if not predicate(row)]
+
+
+def has_target_filters(args: argparse.Namespace) -> bool:
+    return bool(args.session_num or args.topic_id or args.question_id)
+
+
+def should_process_session(session_num: str, args: argparse.Namespace) -> bool:
+    return not args.session_num or session_num in args.session_num
+
+
+def should_process_topic(topic_id: str, args: argparse.Namespace) -> bool:
+    return not args.topic_id or topic_id in args.topic_id
+
+
+def should_process_question(question_id: str, args: argparse.Namespace) -> bool:
+    return not args.question_id or question_id in args.question_id
+
+
+def resolve_fidelity_topk(
+    manual_units: list[dict[str, Any]],
+    explicit_topk: int,
+    dynamic_topk: bool,
+) -> int:
+    if dynamic_topk and manual_units:
+        return max(len(manual_units), 1)
+    return explicit_topk
 
 
 def main() -> None:
@@ -535,6 +555,7 @@ def main() -> None:
     parser.add_argument("--question-weight-topic", type=float, default=get_float("cycle_analysis", "question_weight_topic", 0.0))
     parser.add_argument("--context-window", type=int, default=get_int("transcript_export", "context_window", 2))
     parser.add_argument("--ollama-model", default="", help="Optional Ollama model for automated PI-question summaries")
+    parser.add_argument("--fidelity-ollama-model", default="", help="Optional Ollama model for fidelity adjudication summaries")
     parser.add_argument(
         "--ollama-ssh-host",
         default=get_str("ollama", "ssh_host", "rc2526@10.168.224.148"),
@@ -551,6 +572,13 @@ def main() -> None:
         help="Path to the Ollama binary on the remote host",
     )
     parser.add_argument("--limit-topics", type=int, default=get_int("cycle_analysis", "limit_topics", 0), help="Optional limit for debugging")
+    parser.add_argument("--mode", choices=["all", "fidelity", "pi"], default="all", help="Run all outputs, only fidelity outputs, or only PI question outputs")
+    parser.add_argument("--session-num", nargs="+", default=[], help="Optional manual session numbers to rerun")
+    parser.add_argument("--topic-id", nargs="+", default=[], help="Optional topic ids to rerun")
+    parser.add_argument("--question-id", nargs="+", default=[], help="Optional PI question ids to rerun")
+    parser.add_argument("--overwrite", action="store_true", help="Overwrite cycle outputs instead of merging targeted reruns into existing files")
+    parser.add_argument("--fixed-fidelity-topk", dest="dynamic_fidelity_topk", action="store_false", help="Use the fixed --fidelity-topk value instead of expected manual unit counts")
+    parser.set_defaults(dynamic_fidelity_topk=True)
     args = parser.parse_args()
 
     ensure_dir(CYCLE_ANALYSIS_DIR)
@@ -572,59 +600,95 @@ def main() -> None:
 
         topic_count = 0
         for session_num in session_numbers:
+            if not should_process_session(session_num, args):
+                continue
             session_topics = get_topic_entries_for_session(session_num)
+            selected_session_topics = [topic for topic in session_topics if should_process_topic(str(topic.get("id", "")), args)]
+            if args.topic_id and not selected_session_topics:
+                continue
 
-            for topic in session_topics:
+            for topic in selected_session_topics:
                 topic_count += 1
                 if args.limit_topics and topic_count > args.limit_topics:
                     break
                 topic_id = topic.get("id", "")
                 topic_label = topic.get("label", "")
+                session_summary = get_session_summary(session_num).get("session_summary", "")
+                topic_definition = get_topic_definition(topic_id, topic_label, session_summary)
                 session_manual_units = get_manual_units_for_session(session_num, topic_id=topic_id)
 
-                fidelity_query = get_str("fidelity", "fidelity_query_template", "Session {session_num} {topic_label}").format(
-                    session_num=session_num,
-                    topic_label=topic_label,
-                ).strip()
-                fidelity_windows = build_transcript_windows(
-                    fidelity_query,
-                    topic_id=topic_id,
-                    session_num=session_num,
-                    cycle_id=cycle_id,
-                    topk=args.fidelity_topk,
-                    weight_doc=args.fidelity_weight_doc,
-                    weight_topic=args.fidelity_weight_topic,
-                    meta_rows=meta_rows,
-                    path_lookup=path_lookup,
-                    window=args.context_window,
-                )
-                fidelity_rows.append(summarize_fidelity(cycle_id, session_num, topic, fidelity_windows, session_manual_units))
+                if args.mode in {"all", "fidelity"}:
+                    fidelity_query = get_str("fidelity", "fidelity_query_template", "Session {session_num} {topic_label}").format(
+                        session_num=session_num,
+                        topic_label=topic_label,
+                    ).strip()
+                    fidelity_windows = build_transcript_windows(
+                        fidelity_query,
+                        topic_id=topic_id,
+                        session_num=session_num,
+                        cycle_id=cycle_id,
+                        topk=resolve_fidelity_topk(session_manual_units, args.fidelity_topk, args.dynamic_fidelity_topk),
+                        weight_doc=args.fidelity_weight_doc,
+                        weight_topic=args.fidelity_weight_topic,
+                        meta_rows=meta_rows,
+                        path_lookup=path_lookup,
+                        window=args.context_window,
+                    )
+                    fidelity_row = summarize_fidelity(cycle_id, session_num, topic, fidelity_windows, session_manual_units)
+                    if args.fidelity_ollama_model:
+                        prompt = build_topic_fidelity_adjudication_prompt(
+                            cycle_id,
+                            session_num,
+                            topic,
+                            session_manual_units,
+                            fidelity_windows,
+                        )
+                        payload = parse_json_response(
+                            call_ollama(
+                                prompt,
+                                args.fidelity_ollama_model,
+                                ollama_ssh_host=args.ollama_ssh_host,
+                                ollama_ssh_key=args.ollama_ssh_key,
+                                ollama_remote_bin=args.ollama_remote_bin,
+                            )
+                        )
+                        fidelity_row.update(fidelity_generation_fields(payload, prompt))
+                    fidelity_rows.append(fidelity_row)
 
-                for row in fidelity_windows:
-                    evidence_rows.append(
-                        {
-                            "cycle_id": cycle_id,
-                            "session_num": session_num,
-                            "topic_id": topic_id,
-                            "topic_label": topic_label,
-                            "analysis_mode": "fidelity",
-                            "question_id": "",
-                            "query_text": fidelity_query,
-                            "retrieval_rank": row.get("retrieval_rank", ""),
-                            "session_id": row.get("session_id", ""),
-                            "speaker": row.get("speaker", ""),
-                            "score_combined": row.get("score_combined", ""),
-                            "score_doc": row.get("score_doc", ""),
-                            "score_topic": row.get("score_topic", ""),
-                            "manual_unit_id_best_match": row.get("manual_unit_id_best_match", ""),
-                            "manual_unit_match_score": row.get("manual_unit_match_score", ""),
-                            "text": row.get("text", ""),
+                    for row in fidelity_windows:
+                        evidence_rows.append(
+                            {
+                                "cycle_id": cycle_id,
+                                "session_num": session_num,
+                                "topic_id": topic_id,
+                                "topic_label": topic_label,
+                                "analysis_mode": "fidelity",
+                                "question_id": "",
+                                "query_text": fidelity_query,
+                                "retrieval_rank": row.get("retrieval_rank", ""),
+                                "session_id": row.get("session_id", ""),
+                                "speaker": row.get("speaker", ""),
+                                "score_combined": row.get("score_combined", ""),
+                                "score_doc": row.get("score_doc", ""),
+                                "score_topic": row.get("score_topic", ""),
+                                "manual_unit_id_best_match": row.get("manual_unit_id_best_match", ""),
+                                "manual_unit_match_score": row.get("manual_unit_match_score", ""),
+                                "text": row.get("text", ""),
                                 "excerpt": format_evidence_excerpt(row.get("text", "")),
                             }
                         )
 
                 for question_spec in PI_QUESTION_SPECS:
-                    query_text = build_pi_question_query(session_num, topic, question_spec)
+                    if args.mode == "fidelity" or not should_process_question(question_spec["question_id"], args):
+                        continue
+                    query_text = build_pi_query_text(
+                        session_num=session_num,
+                        topic_label=topic_label,
+                        topic_definition=topic_definition,
+                        question_label=question_spec["label"],
+                        query_template=question_spec["query_template"],
+                        session_summary=session_summary,
+                    )
                     question_windows = build_transcript_windows(
                         query_text,
                         topic_id=topic_id,
@@ -713,32 +777,55 @@ def main() -> None:
             if args.limit_topics and topic_count >= args.limit_topics:
                 break
 
+            if args.mode == "pi":
+                continue
             session_summary_row = get_session_summary(session_num)
             session_summary = session_summary_row.get("session_summary", "")
-            session_topic_labels = [str(topic.get("label", "")).strip() for topic in session_topics if str(topic.get("label", "")).strip()]
-            session_fidelity_query = build_session_fidelity_query(session_num, session_summary, session_topic_labels)
+            session_topic_labels = [str(topic.get("label", "")).strip() for topic in selected_session_topics if str(topic.get("label", "")).strip()]
+            session_fidelity_query = build_session_fidelity_query(
+                session_num=session_num,
+                session_summary=session_summary,
+                topic_labels=session_topic_labels,
+            )
             session_manual_units = get_manual_units_for_session(session_num)
             session_fidelity_windows = build_session_fidelity_windows(
                 cycle_id=cycle_id,
                 session_num=session_num,
                 session_summary=session_summary,
                 session_topics=session_topics,
-                topk=args.fidelity_topk,
+                topk=resolve_fidelity_topk(session_manual_units, args.fidelity_topk, args.dynamic_fidelity_topk),
                 weight_doc=args.fidelity_weight_doc,
                 weight_topic=args.fidelity_weight_topic,
                 meta_rows=meta_rows,
                 path_lookup=path_lookup,
                 window=args.context_window,
             )
-            session_fidelity_rows.append(
-                summarize_session_fidelity(
+            session_fidelity_row = summarize_session_fidelity(
+                cycle_id,
+                session_num,
+                selected_session_topics,
+                session_fidelity_windows,
+                session_manual_units,
+            )
+            if args.fidelity_ollama_model:
+                prompt = build_session_fidelity_adjudication_prompt(
                     cycle_id,
                     session_num,
-                    session_topics,
-                    session_fidelity_windows,
+                    selected_session_topics,
                     session_manual_units,
+                    session_fidelity_windows,
                 )
-            )
+                payload = parse_json_response(
+                    call_ollama(
+                        prompt,
+                        args.fidelity_ollama_model,
+                        ollama_ssh_host=args.ollama_ssh_host,
+                        ollama_ssh_key=args.ollama_ssh_key,
+                        ollama_remote_bin=args.ollama_remote_bin,
+                    )
+                )
+                session_fidelity_row.update(fidelity_generation_fields(payload, prompt))
+            session_fidelity_rows.append(session_fidelity_row)
             for row in session_fidelity_windows:
                 session_fidelity_evidence_rows.append(
                     {
@@ -762,127 +849,205 @@ def main() -> None:
                     }
                 )
 
-        write_csv(
-            cycle_dir / "fidelity_summary.csv",
-            [
-                "cycle_id",
-                "session_num",
-                "session_label",
-                "topic_id",
-                "topic_label",
-                "fidelity_query",
-                "retrieved_evidence_count",
-                "expected_manual_unit_count",
-                "matched_manual_unit_count",
-                "manual_unit_coverage",
-                "expected_subsection_count",
-                "matched_subsection_count",
-                "subsection_coverage",
-                "adherence_score",
-                "adherence_label",
-                "matched_manual_unit_ids",
-                "matched_subsections",
-                "sample_session_ids",
-            ],
-            fidelity_rows,
-        )
-        write_csv(
-            cycle_dir / "session_fidelity_summary.csv",
-            [
-                "cycle_id",
-                "manual_session_num",
-                "manual_session_label",
-                "fidelity_query",
-                "session_summary",
-                "session_topic_ids",
-                "session_topic_labels",
-                "retrieved_evidence_count",
-                "expected_manual_unit_count",
-                "matched_manual_unit_count",
-                "manual_unit_coverage",
-                "expected_subsection_count",
-                "matched_subsection_count",
-                "subsection_coverage",
-                "evidence_density",
-                "adherence_score",
-                "adherence_label",
-                "matched_manual_unit_ids",
-                "matched_subsections",
-                "sample_session_ids",
-            ],
-            session_fidelity_rows,
-        )
-        write_csv(
-            cycle_dir / "pi_question_answers.csv",
-            [
-                "cycle_id",
-                "session_num",
-                "session_label",
-                "topic_id",
-                "topic_label",
-                "question_id",
-                "question_label",
-                "query_text",
-                "retrieved_evidence_count",
-                "prompt_text",
-                "answer_summary",
-                "confidence",
-                "evidence_refs",
-                "manual_unit_ids",
-                "raw_response",
-            ],
-            question_rows,
-        )
-        write_csv(
-            cycle_dir / "session_fidelity_evidence.csv",
-            [
-                "cycle_id",
-                "manual_session_num",
-                "manual_session_label",
-                "analysis_mode",
-                "query_text",
-                "source_topic_id",
-                "source_topic_label",
-                "retrieval_rank",
-                "session_id",
-                "speaker",
-                "score_combined",
-                "score_doc",
-                "score_topic",
-                "manual_unit_id_best_match",
-                "manual_unit_match_score",
-                "text",
-                "excerpt",
-            ],
-            session_fidelity_evidence_rows,
-        )
-        write_csv(
-            cycle_dir / "topic_evidence.csv",
-            [
-                "cycle_id",
-                "session_num",
-                "topic_id",
-                "topic_label",
-                "analysis_mode",
-                "question_id",
-                "query_text",
-                "retrieval_rank",
-                "session_id",
-                "speaker",
-                "score_combined",
-                "score_doc",
-                "score_topic",
-                "manual_unit_id_best_match",
-                "manual_unit_match_score",
-                "text",
-                "excerpt",
-            ],
-            evidence_rows,
-        )
-        (cycle_dir / "pi_question_answers.json").write_text(
-            json.dumps(question_json_rows, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        targeted_run = has_target_filters(args)
+
+        if args.mode in {"all", "fidelity"} and targeted_run and not args.overwrite:
+            existing = read_csv_rows(cycle_dir / "fidelity_summary.csv")
+            fidelity_rows = filter_cycle_rows(
+                existing,
+                lambda row: should_process_session(str(row.get("session_num", "")), args)
+                and should_process_topic(str(row.get("topic_id", "")), args),
+            ) + fidelity_rows
+
+            existing = read_csv_rows(cycle_dir / "session_fidelity_summary.csv")
+            session_fidelity_rows = filter_cycle_rows(
+                existing,
+                lambda row: should_process_session(str(row.get("manual_session_num", "")), args),
+            ) + session_fidelity_rows
+
+            existing = read_csv_rows(cycle_dir / "session_fidelity_evidence.csv")
+            session_fidelity_evidence_rows = filter_cycle_rows(
+                existing,
+                lambda row: should_process_session(str(row.get("manual_session_num", "")), args),
+            ) + session_fidelity_evidence_rows
+
+        if args.mode in {"all", "pi"} and targeted_run and not args.overwrite:
+            existing = read_csv_rows(cycle_dir / "pi_question_answers.csv")
+            question_rows = filter_cycle_rows(
+                existing,
+                lambda row: should_process_session(str(row.get("session_num", "")), args)
+                and should_process_topic(str(row.get("topic_id", "")), args)
+                and should_process_question(str(row.get("question_id", "")), args),
+            ) + question_rows
+
+            json_path = cycle_dir / "pi_question_answers.json"
+            existing_json = json.loads(json_path.read_text(encoding="utf-8")) if json_path.exists() else []
+            question_json_rows = filter_cycle_json_rows(
+                existing_json,
+                lambda row: should_process_session(str(row.get("session_num", "")), args)
+                and should_process_topic(str(row.get("topic_id", "")), args)
+                and should_process_question(str(row.get("question_id", "")), args),
+            ) + question_json_rows
+
+        if targeted_run and not args.overwrite:
+            existing = read_csv_rows(cycle_dir / "topic_evidence.csv")
+            evidence_rows = filter_cycle_rows(
+                existing,
+                lambda row: (
+                    (
+                        str(row.get("analysis_mode", "")) == "fidelity"
+                        and args.mode in {"all", "fidelity"}
+                        and should_process_session(str(row.get("session_num", "")), args)
+                        and should_process_topic(str(row.get("topic_id", "")), args)
+                    )
+                    or (
+                        str(row.get("analysis_mode", "")) == "pi_question"
+                        and args.mode in {"all", "pi"}
+                        and should_process_session(str(row.get("session_num", "")), args)
+                        and should_process_topic(str(row.get("topic_id", "")), args)
+                        and should_process_question(str(row.get("question_id", "")), args)
+                    )
+                ),
+            ) + evidence_rows
+
+        if args.mode in {"all", "fidelity"}:
+            write_csv(
+                cycle_dir / "fidelity_summary.csv",
+                [
+                    "cycle_id",
+                    "session_num",
+                    "session_label",
+                    "topic_id",
+                    "topic_label",
+                    "fidelity_query",
+                    "retrieved_evidence_count",
+                    "expected_manual_unit_count",
+                    "matched_manual_unit_count",
+                    "manual_unit_coverage",
+                    "expected_subsection_count",
+                    "matched_subsection_count",
+                    "subsection_coverage",
+                    "adherence_score",
+                    "adherence_label",
+                    "matched_manual_unit_ids",
+                    "matched_subsections",
+                    "sample_session_ids",
+                    "adjudication_prompt_text",
+                    "adjudication_summary",
+                    "adjudication_label",
+                    "adjudication_confidence",
+                    "adjudication_evidence_refs",
+                    "adjudication_manual_unit_ids",
+                    "adjudication_raw_response",
+                ],
+                fidelity_rows,
+            )
+            write_csv(
+                cycle_dir / "session_fidelity_summary.csv",
+                [
+                    "cycle_id",
+                    "manual_session_num",
+                    "manual_session_label",
+                    "fidelity_query",
+                    "session_summary",
+                    "session_topic_ids",
+                    "session_topic_labels",
+                    "retrieved_evidence_count",
+                    "expected_manual_unit_count",
+                    "matched_manual_unit_count",
+                    "manual_unit_coverage",
+                    "expected_subsection_count",
+                    "matched_subsection_count",
+                    "subsection_coverage",
+                    "evidence_density",
+                    "adherence_score",
+                    "adherence_label",
+                    "matched_manual_unit_ids",
+                    "matched_subsections",
+                    "sample_session_ids",
+                    "adjudication_prompt_text",
+                    "adjudication_summary",
+                    "adjudication_label",
+                    "adjudication_confidence",
+                    "adjudication_evidence_refs",
+                    "adjudication_manual_unit_ids",
+                    "adjudication_raw_response",
+                ],
+                session_fidelity_rows,
+            )
+            write_csv(
+                cycle_dir / "session_fidelity_evidence.csv",
+                [
+                    "cycle_id",
+                    "manual_session_num",
+                    "manual_session_label",
+                    "analysis_mode",
+                    "query_text",
+                    "source_topic_id",
+                    "source_topic_label",
+                    "retrieval_rank",
+                    "session_id",
+                    "speaker",
+                    "score_combined",
+                    "score_doc",
+                    "score_topic",
+                    "manual_unit_id_best_match",
+                    "manual_unit_match_score",
+                    "text",
+                    "excerpt",
+                ],
+                session_fidelity_evidence_rows,
+            )
+        if args.mode in {"all", "pi"}:
+            write_csv(
+                cycle_dir / "pi_question_answers.csv",
+                [
+                    "cycle_id",
+                    "session_num",
+                    "session_label",
+                    "topic_id",
+                    "topic_label",
+                    "question_id",
+                    "question_label",
+                    "query_text",
+                    "retrieved_evidence_count",
+                    "prompt_text",
+                    "answer_summary",
+                    "confidence",
+                    "evidence_refs",
+                    "manual_unit_ids",
+                    "raw_response",
+                ],
+                question_rows,
+            )
+            (cycle_dir / "pi_question_answers.json").write_text(
+                json.dumps(question_json_rows, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        if args.mode in {"all", "fidelity", "pi"}:
+            write_csv(
+                cycle_dir / "topic_evidence.csv",
+                [
+                    "cycle_id",
+                    "session_num",
+                    "topic_id",
+                    "topic_label",
+                    "analysis_mode",
+                    "question_id",
+                    "query_text",
+                    "retrieval_rank",
+                    "session_id",
+                    "speaker",
+                    "score_combined",
+                    "score_doc",
+                    "score_topic",
+                    "manual_unit_id_best_match",
+                    "manual_unit_match_score",
+                    "text",
+                    "excerpt",
+                ],
+                evidence_rows,
+            )
         print(f"Wrote cycle analysis outputs to {cycle_dir}")
 
 

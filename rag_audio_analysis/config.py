@@ -3,6 +3,7 @@ from rag_audio_analysis.settings import get_str
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = PROJECT_ROOT / "data"
+INPUTS_DIR = DATA_DIR / "inputs"
 TEMPLATES_DIR = DATA_DIR / "templates"
 DERIVED_DIR = DATA_DIR / "derived"
 APP_DIR = PROJECT_ROOT / "app"
@@ -30,6 +31,7 @@ TOPIC_CONTENT_SUMMARY_CSV = DERIVED_DIR / "topic_content_summary.csv"
 TOPIC_SESSION_SUMMARY_CSV = DERIVED_DIR / "topic_session_summary.csv"
 MANUAL_FIDELITY_SUMMARY_CSV = DERIVED_DIR / "manual_fidelity_summary.csv"
 CYCLE_ANALYSIS_DIR = DERIVED_DIR / "cycle_analysis"
+SESSION_SUMMARIES_CSV = INPUTS_DIR / "session_summaries.csv"
 
-for path in (DATA_DIR, TEMPLATES_DIR, DERIVED_DIR, APP_DIR, CYCLE_ANALYSIS_DIR):
+for path in (DATA_DIR, INPUTS_DIR, TEMPLATES_DIR, DERIVED_DIR, APP_DIR, CYCLE_ANALYSIS_DIR):
     path.mkdir(parents=True, exist_ok=True)

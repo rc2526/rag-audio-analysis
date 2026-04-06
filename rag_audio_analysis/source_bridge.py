@@ -20,7 +20,7 @@ from rag_audio_analysis.config import (
     SOURCE_TRANSCRIPTS_GLOB,
     SPEAKER_ROLE_MAP_CSV,
 )
-from rag_audio_analysis.settings import get_float, get_int
+from rag_audio_analysis.settings import get_float, get_int, get_str
 
 
 def slugify(value: str) -> str:
@@ -42,20 +42,132 @@ _TOPIC_EMBED_CACHE = None
 _MANUAL_UNIT_EMBED_CACHE = None
 _SESSION_SUMMARY_CACHE = None
 
-SESSION_FIDELITY_PRIORITY_CUES = {
-    "1": "introductions of group leaders and participants, orientation to the 12-week parent stress and health group, group rules, confidentiality, phone use, attendance expectations, binder use, participant goals, stressors, the connection between stress, parenting, health, nutrition, and physical activity, the brain-in-your-hand model, guided breathing, Fitbit use, step goals, and home practice expectations",
-    "2": "review of stress homework, bodily sensations, reactions, the four buckets of experience, mindfulness as present-moment nonjudgmental attention, autopilot, monkey mind, the stress reaction cycle, reacting versus responding, the STOP skill, the raisin activity, mindful eating, guided breathing, sugar-sweetened beverages, healthier drink choices, and beverage-related goals",
-    "3": "review of homework on autopilot and mindfulness, mindful eating, hints for mindful eating, the seven types of hunger, cravings, food choices, body awareness, stretch practice, body scan, visually appealing meals, SMART goals, GO SLOW WHOA food guidance, and physical activity recommendations",
-    "4": "review of the seven types of hunger, visually appealing meals, SMART goals, body scan, seated yoga, stress and unpleasant events, emotional reactivity, impact on a young child, mindfulness of thoughts, feelings, sensations, and mood, pleasant activities, pleasant and unpleasant event tracking, portion size, MyPlate, and portion-control strategies",
-    "5": "pleasant and unpleasant events homework, how planned pleasant activities affect mood, stress, and self-care, parenting-related stress, reacting versus responding with a child, noticing bodily sensations thoughts feelings and urges, sound meditation, pleasant-events guided imagery, parenting stressors, reactions and responses logs, micronutrients, and family physical activity goals",
-    "6": "reacting versus responding homework, parenting triggers, negative emotions, communication stress, awareness during difficult conversations, passive aggressive passive-aggressive and assertive communication, mindful attention during communication, singing bowl meditation, standing body scan, breakfast habits, barriers to breakfast, family activity goals, and SMART or FITT exercise planning",
-    "7": "communication homework, reflection on a difficult communication experience, stressful-experience imagery, the seven attitudes of mindfulness, non-judging, patience, beginner's mind, trust, non-striving, acceptance, letting go, lower-leg body scan, mindfulness checklist, mindfulness activity log, food journaling with hunger and fullness, healthy recipe substitution, and food label reading",
-    "8": "mindfulness attitudes, mindfulness activity logs, food journaling, stress as an iceberg, mindful parenting, parenting on autopilot versus mindful parenting, children responding to parental stress, the ONESIE framework, standing yoga, guided imagery, parenting journal, mindfulness with a child, trying a new fruit or vegetable, meal planning on a budget, and family fitness goals",
-    "9": "mindfulness practice logs, parenting logs, food journals, changes in responses to stress parenting communication and self-care, staying mindful during stress, observing and naming internal experiences, accepting difficult emotions, mindfulness in parenting and communication, the Face the FEAR framework, walking meditation, breath pacing, fruits and vegetables, colors of the rainbow, and family-based physical activity goals",
-    "10": "mindfulness activity practice, how often and under what conditions participants use mindfulness on their own and with their children, acceptance as an active mindfulness process, fear anxiety shame and guilt during stress, noticing thoughts feelings sensations and urges without judgment, the ACCEPT framework, slowing the breath, tolerating discomfort, observing urges, mindful eating with choices, cravings, food decisions, recipe substitutions, and creative physical activity planning",
-    "11": "mindfulness activity practice, food journals, food cravings, autopilot eating, seven types of hunger, environmental cues, awareness and acceptance of stress emotions and urges, observing cravings without acting, seated floor stretch, food-craving imagery, Svasana, the STOP Food Cravings handout, healthier fast food choices, chronic illness risk, and goals to reduce fast food intake",
-    "12": "review of mindfulness practice, cravings, mindful eating, yoga, closing reflection on change across the 12-week group, the four components of experience, slowing down to respond rather than react, non-action, non-striving, continuing mindfulness after the group for self and child, changes in eating habits cravings and family food routines, Fitbit use, original goals, future goals, standing yoga, and summing up helpful nutrition and exercise strategies",
+TOPIC_DEFINITION_MAP = {
+    "role-of-stress-in-body-weight-and-food-intake": "Explores how stress affects appetite, eating behavior, and body-weight related health choices, especially at the start of the group.",
+    "implementing-healthy-food-intake-and-pa-in-a-mindful-and-present-manner": "Frames healthy eating and physical activity as practices that can be approached with mindful, present-moment awareness and supported by weekly goals.",
+    "stress-reaction-cycle-and-habitual-stress-responses": "Introduces the stress reaction cycle and helps participants notice repeated, habitual ways of reacting to stress through the buckets of experience worksheet.",
+    "domains-buckets-of-stress-experience": "Organizes stress into thoughts, feelings, sensations, and urges or behaviors so participants can track their experience more clearly in daily homework.",
+    "definition-of-mindfulness-and-stop-skill-teaching": "Defines mindfulness as present, nonjudgmental awareness and teaches STOP as a brief handout-based skill for pausing and responding more intentionally.",
+    "focused-on-beverages": "Draws attention to beverage choices, especially sugar-sweetened drinks, and pairs this with concrete beverage goals and label awareness.",
+    "physical-activity-steps-and-smart-goals": "Uses step tracking, Fitbit monitoring, and SMART goals to build realistic, measurable physical activity habits.",
+    "stress-facilitated-autopilot-and-monkey-mind-effects-on-choices": "Examines how stress, autopilot, and monkey mind shape daily choices, including eating-related decisions and routine habits.",
+    "eating-mindfully-types-of-hunger-and-tips-for-mindful-eating": "Teaches mindful eating through direct food exercises, the seven types of hunger handout, and practical tips for slowing down meals.",
+    "mindful-eating-with-healthy-foods-choices-and-preparation": "Applies mindful eating to healthier food selection, food preparation, and ingredient choices for self and child, including visually appealing meals.",
+    "stress-and-unpleasant-events-with-a-focus-on-emotional-reactivity": "Focuses on unpleasant events and emotional reactivity, especially how stress responses affect oneself, parenting situations, and relationships.",
+    "pleasant-activity-list": "Uses pleasant activities and pleasant or unpleasant event calendars as deliberate tools for stress coping, self-care, and positive mood support.",
+    "mindfulness-in-reacting-to-unpleasant-events": "Builds skill in noticing unpleasant experiences and stressful parenting moments without immediately reacting on autopilot.",
+    "mindful-approach-to-portion-control-and-mindful-eating": "Links portion awareness with mindful eating by comparing serving sizes and portion sizes and slowing down food decisions.",
+    "reacting-versus-responding-to-stress": "Distinguishes automatic stress reactions from slower, more intentional responses, especially in parenting situations recorded in the reactions or responses log.",
+    "awareness-of-stress-experience-domains": "Strengthens awareness of how stress appears across thoughts, emotions, bodily sensations, and urges, especially during parenting stress.",
+    "breaking-automatic-reactions-for-stress-coping": "Uses mindfulness and awareness to interrupt automatic stress responses and support more effective coping during parenting and daily stress.",
+    "mindful-attention-to-calories-macro-and-micro-nutrients-and-food-groups": "Brings mindful attention to calories, nutrients, and food groups to support informed food decisions and label-based learning.",
+    "effective-communication-during-stress": "Examines how stress affects communication and how mindful awareness can support clearer, more effective exchanges with children and other adults.",
+    "awareness-of-stress-reactions-and-emotions": "Helps participants identify emotional and bodily stress reactions so they can respond with greater awareness during difficult conversations.",
+    "interpersonal-stress-communication": "Explores how stress shapes communication in close relationships and how different communication styles affect outcomes.",
+    "difficult-communications-calendar": "Uses a communication calendar to track challenging conversations, emotional reactions, and what each person wanted or received.",
+    "mindful-attention-to-breakfast-and-healthy-choices": "Encourages mindful attention to breakfast habits, barriers to eating breakfast, and healthier food choices under everyday stress.",
+    "deepening-mindfulness-practices": "Extends mindfulness practice beyond basic skills through repeated home exercises, logs, and more deliberate use in daily life.",
+    "attitudes-towards-mindfulness": "Introduces core mindfulness attitudes such as nonjudging, patience, acceptance, trust, and letting go, and asks participants to track them during the week.",
+    "linking-stress-experience-buckets-to-mindfulness-strategies": "Connects different parts of the stress experience to specific mindfulness strategies that can be used during difficult situations and distressing imagery.",
+    "learning-the-letting-go-skill": "Develops the capacity to release fixation on difficult thoughts, feelings, or urges without avoidance and to practice letting go during stress.",
+    "understanding-food-labels-and-incorporating-that-information-in-making-mindful-choices": "Uses food labels, percent daily value, and added sugar information to support more mindful and informed food choices.",
+    "mindful-food-cravings-stress-stop-and-letting-go-skills": "Applies mindfulness, STOP, and letting-go skills to food cravings and stress-related urges to eat, with direct attention to craving cycles.",
+    "healthy-foods-on-a-budget": "Shows how healthy food choices can be made while staying within a family budget through planning, shopping, and meal preparation.",
+    "meal-planning-shopping-tips-to-stay-within-family-budget": "Uses meal planning, shopping strategies, and budgeting skills to support affordable, healthier eating across the week.",
+    "mindful-parenting-skills": "Applies mindfulness to parenting by helping parents notice stress reactions, use tools like ONESIE, and respond more calmly and intentionally to their child.",
+    "stressful-parenting-experiences": "Centers stressful parenting situations and helps participants reflect on their thoughts, feelings, sensations, and urges in those moments through the parenting log.",
+    "mindfulness-activity-log-and-parenting-journal": "Uses logs and journals to strengthen daily mindfulness practice and reflection on parenting stress, reactions, and responses over time.",
+    "parent-child-play-activities": "Encourages mindful connection and positive interaction through shared parent-child play and other relationship-building activities.",
+    "mindful-activities-for-fruits-and-veggies-consumption-at-snacks-and-meals": "Uses mindful family routines to increase fruit and vegetable intake during snacks and meals and to involve children in healthier eating.",
+    "mindfulness-during-stressful-situations": "Builds the ability to practice mindfulness in the middle of stressful situations, including fear, anxiety, shame, and guilt, rather than only during calm moments.",
+    "noticing-and-managing-difficult-situations-and-emotions": "Strengthens awareness of difficult situations and emotions so they can be named, tolerated, and managed more skillfully.",
+    "mindful-meal-preparations-and-awareness-of-food-substitutions": "Applies mindfulness to meal preparation and healthier food substitutions in everyday cooking and recipe modification.",
+    "awareness-and-acceptance-of-personal-and-child-stress-and-emotions": "Promotes awareness and acceptance of stress and emotions in both parent and child without immediate judgment or reaction, especially during cravings and distress.",
+    "emotion-reactivity-and-automaticity-regulation": "Targets emotional automaticity and reactivity so decisions about food, activity, and parenting become more intentional and less impulsive.",
+    "application-of-mindful-eating-skills-for-choices-of-healthy-fast-foods-and-portion-sizes": "Applies mindful eating skills to fast-food choices, portion control, and healthier eating on the go by slowing down cravings and decisions.",
+    "compassion-for-self-and-child": "Cultivates compassion toward both self and child during stress, difficulty, and change while reviewing how to continue mindfulness after the group ends.",
+    "stress-regulation-and-reframing-stress-and-parenting": "Supports stress regulation and reframing of parenting challenges in ways that promote calmer, more adaptive responses after the program.",
+    "changing-relationships-to-food-and-exercise": "Encourages a more nourishing, sustainable, and self-compassionate relationship to food and exercise as participants set post-group goals.",
+    "integration-of-mindfulness-skills-with-healthy-nutrition-practices-for-self-and-child": "Integrates mindfulness skills with healthy nutrition practices, family routines, and future goal setting for both parent and child.",
 }
+
+
+def clean_text(text: str) -> str:
+    return re.sub(r"\s+", " ", (text or "")).strip()
+
+
+def first_sentence(text: str) -> str:
+    text = clean_text(text)
+    if not text:
+        return ""
+    match = re.search(r"(.+?[.!?])(?:\s|$)", text)
+    return match.group(1).strip() if match else text
+
+
+def get_topic_definition(topic_id: str, topic_label: str = "", session_summary: str = "") -> str:
+    topic_id = str(topic_id or "").strip()
+    if topic_id in TOPIC_DEFINITION_MAP:
+        return TOPIC_DEFINITION_MAP[topic_id]
+
+    label = clean_text(topic_label)
+    summary = first_sentence(session_summary).rstrip(".!?")
+    if summary:
+        return f"Addresses {label.lower()} in the context of {summary}."
+    if label:
+        return f"Addresses {label.lower()}."
+    return ""
+
+
+def build_session_fidelity_query(
+    session_num: str,
+    session_summary: str,
+    topic_labels: list[str] | None = None,
+) -> str:
+    topic_labels = [clean_text(label) for label in (topic_labels or []) if clean_text(label)]
+    session_summary = clean_text(session_summary)
+    priority_clause = ""
+    if topic_labels:
+        priority_clause = f"Priority session elements: {'; '.join(topic_labels)}."
+
+    parts = [
+        f"Manual Session {session_num}.",
+        "Retrieve transcript evidence for this exact manual session.",
+        "Prioritize concrete facilitator teaching, participant practice, handouts, homework, mindfulness exercises, parenting applications, nutrition content, and physical activity content that belong to this session.",
+        "Avoid generic themes from other sessions unless they are clearly enacted as part of this manual session.",
+    ]
+    if priority_clause:
+        parts.append(priority_clause)
+    if session_summary:
+        parts.append(f"Session summary: {session_summary}")
+    return " ".join(part for part in parts if part).strip()
+
+
+def build_pi_query_text(
+    session_num: str,
+    topic_label: str,
+    topic_definition: str,
+    question_label: str,
+    query_template: str,
+    session_summary: str = "",
+) -> str:
+    base = clean_text(
+        query_template.format(
+            session_num=session_num,
+            topic_label=topic_label,
+            topic_definition=topic_definition,
+            question_label=question_label,
+            session_summary=first_sentence(session_summary),
+        )
+    )
+    parts = [
+        f"Manual Session {session_num}.",
+        base,
+    ]
+    if topic_definition:
+        parts.append(f"Topic definition: {topic_definition}")
+    if session_summary:
+        parts.append(f"Session context: {first_sentence(session_summary)}")
+    return " ".join(part for part in parts if part).strip()
 
 
 def load_source_query_module():
@@ -187,52 +299,6 @@ def get_session_summary(session_num: str) -> dict[str, str]:
         "session_label": f"Session {target}" if target else "",
         "session_summary": "",
     }
-
-
-def build_session_fidelity_query(
-    session_num: str,
-    session_summary: str,
-    topic_labels: Optional[list[str]] = None,
-) -> str:
-    session_num = str(session_num or "").strip()
-    session_summary = str(session_summary or "").strip()
-    labels = [str(label or "").strip() for label in (topic_labels or []) if str(label or "").strip()]
-    priority_cues = SESSION_FIDELITY_PRIORITY_CUES.get(session_num, "")
-    if not priority_cues and labels:
-        priority_cues = ", ".join(labels)
-
-    parts = [f"Manual Session {session_num}. Retrieve transcript evidence specific to this manual session only."]
-    if priority_cues:
-        parts.extend(
-            [
-                "",
-                "Prioritize evidence about:",
-                priority_cues,
-            ]
-        )
-    parts.extend(
-        [
-            "",
-            "Avoid evidence that is primarily about generic themes from other sessions unless it is clearly tied to this session summary.",
-        ]
-    )
-    if session_summary:
-        parts.extend(
-            [
-                "",
-                "Session summary:",
-                session_summary,
-            ]
-        )
-    elif labels:
-        parts.extend(
-            [
-                "",
-                "Session topics:",
-                "; ".join(labels),
-            ]
-        )
-    return "\n".join(parts).strip()
 
 
 def load_manual_topic_lookup() -> dict[int, dict[str, str]]:
@@ -772,9 +838,13 @@ def query_evidence(
     qn = qvec / (_np.linalg.norm(qvec) or 1.0)
     sims_doc = doc_norm.dot(qn)
 
-    topic_emb, topic_list = module._load_topic_embeddings(str(SOURCE_RAG_INDEX))
+    use_topic_scores = weight_topic > 0
+    topic_emb = None
+    topic_list = None
     sims_topic = _np.zeros_like(sims_doc)
     doc_topic_sims = None
+    if use_topic_scores:
+        topic_emb, topic_list = module._load_topic_embeddings(str(SOURCE_RAG_INDEX))
     if topic_emb is not None:
         topic_norm = row_norm(topic_emb.astype(_np.float32))
         doc_topic_sims = doc_norm.dot(topic_norm.T)
