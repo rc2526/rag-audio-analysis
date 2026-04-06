@@ -75,6 +75,69 @@ def build_fidelity_by_cycle(fidelity_df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows).sort_values("cycle_id")
 
 
+def build_session_fidelity_by_cycle(fidelity_df: pd.DataFrame) -> pd.DataFrame:
+    if fidelity_df.empty:
+        return pd.DataFrame()
+    df = fidelity_df.copy()
+    numeric_cols = [
+        "adherence_score",
+        "manual_unit_coverage",
+        "subsection_coverage",
+        "evidence_density",
+        "retrieved_evidence_count",
+    ]
+    for col in numeric_cols:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    grouped = df.groupby("cycle_id", dropna=False)
+    rows = []
+    for cycle_id, group in grouped:
+        labels = group["adherence_label"].astype(str)
+        rows.append(
+            {
+                "cycle_id": cycle_id,
+                "manual_session_rows": len(group.index),
+                "mean_adherence_score": round(group["adherence_score"].mean(), 4),
+                "median_adherence_score": round(group["adherence_score"].median(), 4),
+                "mean_manual_unit_coverage": round(group["manual_unit_coverage"].mean(), 4),
+                "mean_subsection_coverage": round(group["subsection_coverage"].mean(), 4),
+                "mean_evidence_density": round(group["evidence_density"].mean(), 4),
+                "mean_retrieved_evidence_count": round(group["retrieved_evidence_count"].mean(), 2),
+                "pct_high_adherence": round(100.0 * (labels == "high").mean(), 2),
+                "pct_moderate_adherence": round(100.0 * (labels == "moderate").mean(), 2),
+                "pct_low_adherence": round(100.0 * (labels == "low").mean(), 2),
+            }
+        )
+    return pd.DataFrame(rows).sort_values("cycle_id")
+
+
+def build_session_fidelity_by_manual_session(fidelity_df: pd.DataFrame) -> pd.DataFrame:
+    if fidelity_df.empty:
+        return pd.DataFrame()
+    df = fidelity_df.copy()
+    for col in ["adherence_score", "manual_unit_coverage", "subsection_coverage", "evidence_density", "retrieved_evidence_count"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+    grouped = df.groupby(["manual_session_num", "manual_session_label"], dropna=False)
+    rows = []
+    for (manual_session_num, manual_session_label), group in grouped:
+        rows.append(
+            {
+                "manual_session_num": manual_session_num,
+                "manual_session_label": manual_session_label,
+                "cycle_rows": len(group.index),
+                "mean_adherence_score": round(group["adherence_score"].mean(), 4),
+                "median_adherence_score": round(group["adherence_score"].median(), 4),
+                "mean_manual_unit_coverage": round(group["manual_unit_coverage"].mean(), 4),
+                "mean_subsection_coverage": round(group["subsection_coverage"].mean(), 4),
+                "mean_evidence_density": round(group["evidence_density"].mean(), 4),
+                "mean_retrieved_evidence_count": round(group["retrieved_evidence_count"].mean(), 2),
+            }
+        )
+    return pd.DataFrame(rows).sort_values(["manual_session_num"])
+
+
 def build_fidelity_by_topic(fidelity_df: pd.DataFrame) -> pd.DataFrame:
     if fidelity_df.empty:
         return pd.DataFrame()
@@ -204,15 +267,21 @@ def main() -> None:
     ensure_dir(SUMMARY_DIR)
 
     fidelity_df = load_cycle_csvs("fidelity_summary.csv")
+    session_fidelity_df = load_cycle_csvs("session_fidelity_summary.csv")
     pi_df = load_cycle_csvs("pi_question_answers.csv")
     evidence_df = load_cycle_csvs("topic_evidence.csv")
+    session_evidence_df = load_cycle_csvs("session_fidelity_evidence.csv")
 
     write_csv(fidelity_df, SUMMARY_DIR / "table_session_topic_fidelity.csv")
+    write_csv(session_fidelity_df, SUMMARY_DIR / "table_cycle_manual_session_fidelity.csv")
     write_csv(pi_df, SUMMARY_DIR / "table_pi_question_answers.csv")
     write_csv(evidence_df, SUMMARY_DIR / "table_topic_evidence.csv")
+    write_csv(session_evidence_df, SUMMARY_DIR / "table_cycle_manual_session_evidence.csv")
 
     write_csv(build_fidelity_by_cycle(fidelity_df), SUMMARY_DIR / "summary_fidelity_by_cycle.csv")
     write_csv(build_fidelity_by_topic(fidelity_df), SUMMARY_DIR / "summary_fidelity_by_topic.csv")
+    write_csv(build_session_fidelity_by_cycle(session_fidelity_df), SUMMARY_DIR / "summary_session_fidelity_by_cycle.csv")
+    write_csv(build_session_fidelity_by_manual_session(session_fidelity_df), SUMMARY_DIR / "summary_session_fidelity_by_manual_session.csv")
     write_csv(build_pi_by_cycle(pi_df), SUMMARY_DIR / "summary_pi_questions_by_cycle.csv")
     write_csv(build_pi_by_question(pi_df), SUMMARY_DIR / "summary_pi_questions_by_type.csv")
     write_csv(build_pi_by_cycle_and_question(pi_df), SUMMARY_DIR / "summary_pi_questions_by_cycle_and_type.csv")

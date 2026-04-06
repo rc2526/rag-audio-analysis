@@ -8,6 +8,7 @@ import numpy as np
 
 from rag_audio_analysis.config import (
     CYCLE_ANALYSIS_DIR,
+    SESSION_SUMMARIES_CSV,
     SOURCE_BUILD_AND_QUERY,
     SOURCE_META,
     SOURCE_MANUAL,
@@ -39,6 +40,22 @@ _SOURCE_QUERY_MODULE = None
 _EMBED_MODEL = None
 _TOPIC_EMBED_CACHE = None
 _MANUAL_UNIT_EMBED_CACHE = None
+_SESSION_SUMMARY_CACHE = None
+
+SESSION_FIDELITY_PRIORITY_CUES = {
+    "1": "introductions of group leaders and participants, orientation to the 12-week parent stress and health group, group rules, confidentiality, phone use, attendance expectations, binder use, participant goals, stressors, the connection between stress, parenting, health, nutrition, and physical activity, the brain-in-your-hand model, guided breathing, Fitbit use, step goals, and home practice expectations",
+    "2": "review of stress homework, bodily sensations, reactions, the four buckets of experience, mindfulness as present-moment nonjudgmental attention, autopilot, monkey mind, the stress reaction cycle, reacting versus responding, the STOP skill, the raisin activity, mindful eating, guided breathing, sugar-sweetened beverages, healthier drink choices, and beverage-related goals",
+    "3": "review of homework on autopilot and mindfulness, mindful eating, hints for mindful eating, the seven types of hunger, cravings, food choices, body awareness, stretch practice, body scan, visually appealing meals, SMART goals, GO SLOW WHOA food guidance, and physical activity recommendations",
+    "4": "review of the seven types of hunger, visually appealing meals, SMART goals, body scan, seated yoga, stress and unpleasant events, emotional reactivity, impact on a young child, mindfulness of thoughts, feelings, sensations, and mood, pleasant activities, pleasant and unpleasant event tracking, portion size, MyPlate, and portion-control strategies",
+    "5": "pleasant and unpleasant events homework, how planned pleasant activities affect mood, stress, and self-care, parenting-related stress, reacting versus responding with a child, noticing bodily sensations thoughts feelings and urges, sound meditation, pleasant-events guided imagery, parenting stressors, reactions and responses logs, micronutrients, and family physical activity goals",
+    "6": "reacting versus responding homework, parenting triggers, negative emotions, communication stress, awareness during difficult conversations, passive aggressive passive-aggressive and assertive communication, mindful attention during communication, singing bowl meditation, standing body scan, breakfast habits, barriers to breakfast, family activity goals, and SMART or FITT exercise planning",
+    "7": "communication homework, reflection on a difficult communication experience, stressful-experience imagery, the seven attitudes of mindfulness, non-judging, patience, beginner's mind, trust, non-striving, acceptance, letting go, lower-leg body scan, mindfulness checklist, mindfulness activity log, food journaling with hunger and fullness, healthy recipe substitution, and food label reading",
+    "8": "mindfulness attitudes, mindfulness activity logs, food journaling, stress as an iceberg, mindful parenting, parenting on autopilot versus mindful parenting, children responding to parental stress, the ONESIE framework, standing yoga, guided imagery, parenting journal, mindfulness with a child, trying a new fruit or vegetable, meal planning on a budget, and family fitness goals",
+    "9": "mindfulness practice logs, parenting logs, food journals, changes in responses to stress parenting communication and self-care, staying mindful during stress, observing and naming internal experiences, accepting difficult emotions, mindfulness in parenting and communication, the Face the FEAR framework, walking meditation, breath pacing, fruits and vegetables, colors of the rainbow, and family-based physical activity goals",
+    "10": "mindfulness activity practice, how often and under what conditions participants use mindfulness on their own and with their children, acceptance as an active mindfulness process, fear anxiety shame and guilt during stress, noticing thoughts feelings sensations and urges without judgment, the ACCEPT framework, slowing the breath, tolerating discomfort, observing urges, mindful eating with choices, cravings, food decisions, recipe substitutions, and creative physical activity planning",
+    "11": "mindfulness activity practice, food journals, food cravings, autopilot eating, seven types of hunger, environmental cues, awareness and acceptance of stress emotions and urges, observing cravings without acting, seated floor stretch, food-craving imagery, Svasana, the STOP Food Cravings handout, healthier fast food choices, chronic illness risk, and goals to reduce fast food intake",
+    "12": "review of mindfulness practice, cravings, mindful eating, yoga, closing reflection on change across the 12-week group, the four components of experience, slowing down to respond rather than react, non-action, non-striving, continuing mindfulness after the group for self and child, changes in eating habits cravings and family food routines, Fitbit use, original goals, future goals, standing yoga, and summing up helpful nutrition and exercise strategies",
+}
 
 
 def load_source_query_module():
@@ -134,6 +151,88 @@ def load_topic_entries() -> list[dict[str, str]]:
         ]
 
     return csv_entries
+
+
+def load_session_summaries() -> list[dict[str, str]]:
+    global _SESSION_SUMMARY_CACHE
+    if _SESSION_SUMMARY_CACHE is not None:
+        return _SESSION_SUMMARY_CACHE
+    if not SESSION_SUMMARIES_CSV.exists():
+        _SESSION_SUMMARY_CACHE = []
+        return _SESSION_SUMMARY_CACHE
+
+    rows: list[dict[str, str]] = []
+    with open(SESSION_SUMMARIES_CSV, newline="", encoding="utf-8") as handle:
+        reader = csv.DictReader(handle)
+        for row in reader:
+            session_num = str(row.get("session_num", "") or "").strip()
+            rows.append(
+                {
+                    "session_num": session_num,
+                    "session_label": str(row.get("session_label", "") or f"Session {session_num}").strip(),
+                    "session_summary": str(row.get("session_summary", "") or "").strip(),
+                }
+            )
+    _SESSION_SUMMARY_CACHE = rows
+    return _SESSION_SUMMARY_CACHE
+
+
+def get_session_summary(session_num: str) -> dict[str, str]:
+    target = str(session_num or "").strip()
+    for row in load_session_summaries():
+        if str(row.get("session_num", "")).strip() == target:
+            return row
+    return {
+        "session_num": target,
+        "session_label": f"Session {target}" if target else "",
+        "session_summary": "",
+    }
+
+
+def build_session_fidelity_query(
+    session_num: str,
+    session_summary: str,
+    topic_labels: Optional[list[str]] = None,
+) -> str:
+    session_num = str(session_num or "").strip()
+    session_summary = str(session_summary or "").strip()
+    labels = [str(label or "").strip() for label in (topic_labels or []) if str(label or "").strip()]
+    priority_cues = SESSION_FIDELITY_PRIORITY_CUES.get(session_num, "")
+    if not priority_cues and labels:
+        priority_cues = ", ".join(labels)
+
+    parts = [f"Manual Session {session_num}. Retrieve transcript evidence specific to this manual session only."]
+    if priority_cues:
+        parts.extend(
+            [
+                "",
+                "Prioritize evidence about:",
+                priority_cues,
+            ]
+        )
+    parts.extend(
+        [
+            "",
+            "Avoid evidence that is primarily about generic themes from other sessions unless it is clearly tied to this session summary.",
+        ]
+    )
+    if session_summary:
+        parts.extend(
+            [
+                "",
+                "Session summary:",
+                session_summary,
+            ]
+        )
+    elif labels:
+        parts.extend(
+            [
+                "",
+                "Session topics:",
+                "; ".join(labels),
+            ]
+        )
+    return "\n".join(parts).strip()
 
 
 def load_manual_topic_lookup() -> dict[int, dict[str, str]]:

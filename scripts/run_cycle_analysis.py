@@ -3,18 +3,21 @@ import argparse
 import csv
 import json
 import os
+import re
 import shlex
 import subprocess
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from rag_audio_analysis.config import CYCLE_ANALYSIS_DIR
 from rag_audio_analysis.settings import get_float, get_int, get_list, get_str
 from rag_audio_analysis.source_bridge import (
+    build_session_fidelity_query,
     build_doc_index_by_path,
     expand_transcript_context,
     get_manual_units_for_session,
     get_rag_index_rows,
+    get_session_summary,
     get_topic_entries_for_session,
     infer_manual_unit_for_text,
     infer_session_id,
@@ -44,6 +47,34 @@ PI_QUESTION_SPECS = [
         "query_template": get_str("pi_questions", "participant_child_home_query", "Session {session_num} {topic_label}. Participant describing using this skill with their child at home."),
     },
 ]
+
+TOPIC_DEFINITION_STOPWORDS = {
+    "a",
+    "an",
+    "and",
+    "are",
+    "as",
+    "at",
+    "be",
+    "by",
+    "for",
+    "from",
+    "how",
+    "in",
+    "into",
+    "is",
+    "it",
+    "its",
+    "of",
+    "on",
+    "or",
+    "session",
+    "the",
+    "this",
+    "to",
+    "using",
+    "with",
+}
 
 
 def ensure_dir(path: Path) -> None:
@@ -110,6 +141,126 @@ def format_evidence_excerpt(text: str, limit: int | None = None) -> str:
     return text[:limit].rstrip() + "..."
 
 
+def tokenize_topic_text(text: str) -> list[str]:
+    return [
+        token
+        for token in re.findall(r"[a-z0-9]+", str(text or "").lower())
+        if token and token not in TOPIC_DEFINITION_STOPWORDS
+    ]
+
+
+def split_summary_sentences(text: str) -> list[str]:
+    parts = re.split(r"(?<=[.!?])\s+", str(text or "").strip())
+    return [part.strip() for part in parts if part.strip()]
+
+
+def normalize_topic_label(topic_label: str) -> str:
+    label = str(topic_label or "").strip()
+    if not label:
+        return ""
+    label = label[0].lower() + label[1:]
+    label = re.sub(r"\bPA\b", "physical activity", label)
+    return label
+
+
+def clean_summary_fragment(text: str) -> str:
+    fragment = str(text or "").strip(" ,.;:")
+    replacements = [
+        r"^the session focuses on\s+",
+        r"^the session deepens\s+",
+        r"^the session also focuses on\s+",
+        r"^participants are introduced to\s+",
+        r"^participants discuss\s+",
+        r"^participants reflect on\s+",
+        r"^experiential practice includes\s+",
+        r"^additional experiential practice includes\s+",
+        r"^homework emphasizes\s+",
+        r"^the nutrition and physical activity component focuses on\s+",
+        r"^the nutrition component focuses on\s+",
+    ]
+    for pattern in replacements:
+        fragment = re.sub(pattern, "", fragment, flags=re.IGNORECASE)
+    return fragment.strip(" ,.;:")
+
+
+def sentence_fragments(text: str) -> list[str]:
+    fragments: list[str] = []
+    for sentence in split_summary_sentences(text):
+        parts = re.split(r";|, followed by |, with |, and ", sentence)
+        for part in parts:
+            cleaned = clean_summary_fragment(part)
+            if cleaned:
+                fragments.append(cleaned)
+    return fragments
+
+
+def choose_topic_context_fragments(topic_label: str, session_summary: str) -> list[str]:
+    topic_tokens = set(tokenize_topic_text(topic_label))
+    scored_fragments: list[tuple[int, int, str]] = []
+    for idx, fragment in enumerate(sentence_fragments(session_summary)):
+        fragment_tokens = set(tokenize_topic_text(fragment))
+        overlap = len(topic_tokens & fragment_tokens)
+        bonus = 1 if normalize_topic_label(topic_label) in fragment.lower() else 0
+        score = overlap * 3 + bonus
+        scored_fragments.append((score, -idx, fragment))
+
+    scored_fragments.sort(reverse=True)
+    chosen = [fragment for score, _, fragment in scored_fragments if score > 0][:2]
+    if chosen:
+        return chosen
+    fallback = [clean_summary_fragment(sentence) for sentence in split_summary_sentences(session_summary)[:2]]
+    return [fragment for fragment in fallback if fragment]
+
+
+def derive_topic_definition(topic_label: str, session_summary: str) -> str:
+    topic_label = str(topic_label or "").strip()
+    session_summary = str(session_summary or "").strip()
+    if not topic_label:
+        return format_evidence_excerpt(session_summary, 320)
+    if not session_summary:
+        return f"Focuses on {normalize_topic_label(topic_label)} in this session."
+
+    context_fragments = choose_topic_context_fragments(topic_label, session_summary)
+    context_text = "; ".join(context_fragments).strip() or clean_summary_fragment(session_summary)
+    gloss = f"Focuses on {normalize_topic_label(topic_label)} in the context of {context_text}."
+    gloss = re.sub(r"\s+", " ", gloss).strip()
+    return format_evidence_excerpt(gloss, 320)
+
+
+def build_pi_question_query(
+    session_num: str,
+    topic: dict[str, str],
+    question_spec: dict[str, str],
+) -> str:
+    topic_label = str(topic.get("label", "")).strip()
+    session_summary_row = get_session_summary(session_num)
+    session_summary = str(session_summary_row.get("session_summary", "")).strip()
+    topic_definition = derive_topic_definition(topic_label, session_summary)
+    retrieval_focus = question_spec["query_template"].format(session_num=session_num, topic_label=topic_label).strip()
+
+    parts = [
+        f"Session {session_num}. Topic: {topic_label}.",
+        "",
+        "Topic definition:",
+        topic_definition,
+        "",
+        "Question:",
+        question_spec["label"],
+        "",
+        "Retrieval focus:",
+        retrieval_focus,
+    ]
+    if session_summary:
+        parts.extend(
+            [
+                "",
+                "Session summary context:",
+                format_evidence_excerpt(session_summary, 500),
+            ]
+        )
+    return "\n".join(parts).strip()
+
+
 def build_transcript_windows(
     query_text: str,
     topic_id: str,
@@ -121,6 +272,7 @@ def build_transcript_windows(
     meta_rows: list[dict[str, Any]],
     path_lookup: dict[str, list[int]],
     window: int,
+    manual_units: Optional[list[dict[str, Any]]] = None,
 ) -> list[dict[str, Any]]:
     raw_results = query_evidence(
         query_text,
@@ -131,7 +283,7 @@ def build_transcript_windows(
         transcript_only=True,
     )
 
-    session_manual_units = get_manual_units_for_session(session_num, topic_id=topic_id)
+    session_manual_units = manual_units if manual_units is not None else get_manual_units_for_session(session_num, topic_id=topic_id)
     windows: list[dict[str, Any]] = []
     seen_doc_indices: set[int] = set()
 
@@ -162,6 +314,37 @@ def build_transcript_windows(
             }
         )
     return windows
+
+
+def build_session_fidelity_windows(
+    cycle_id: str,
+    session_num: str,
+    session_summary: str,
+    session_topics: list[dict[str, str]],
+    topk: int,
+    weight_doc: float,
+    weight_topic: float,
+    meta_rows: list[dict[str, Any]],
+    path_lookup: dict[str, list[int]],
+    window: int,
+) -> list[dict[str, Any]]:
+    session_manual_units = get_manual_units_for_session(session_num)
+    dynamic_topk = len(session_manual_units) or topk
+    topic_labels = [str(topic.get("label", "")).strip() for topic in session_topics if str(topic.get("label", "")).strip()]
+    query_text = build_session_fidelity_query(session_num, session_summary, topic_labels)
+    return build_transcript_windows(
+        query_text=query_text,
+        topic_id="",
+        session_num=session_num,
+        cycle_id=cycle_id,
+        topk=dynamic_topk,
+        weight_doc=weight_doc,
+        weight_topic=weight_topic,
+        meta_rows=meta_rows,
+        path_lookup=path_lookup,
+        window=window,
+        manual_units=session_manual_units,
+    )
 
 
 def summarize_fidelity(
@@ -208,6 +391,67 @@ def summarize_fidelity(
         "expected_subsection_count": str(len(expected_subsections)),
         "matched_subsection_count": str(len(observed_subsections)),
         "subsection_coverage": f"{subsection_cov:.3f}",
+        "adherence_score": f"{combined_score:.3f}",
+        "adherence_label": adherence,
+        "matched_manual_unit_ids": ";".join(sorted(observed_ids)),
+        "matched_subsections": ";".join(sorted(observed_subsections)),
+        "sample_session_ids": ";".join(sorted({w.get('session_id', '') for w in windows if w.get('session_id')})),
+    }
+
+
+def summarize_session_fidelity(
+    cycle_id: str,
+    session_num: str,
+    topics: list[dict[str, str]],
+    windows: list[dict[str, Any]],
+    manual_units: list[dict[str, Any]],
+) -> dict[str, str]:
+    session_summary_row = get_session_summary(session_num)
+    expected_ids = {unit["manual_unit_id"] for unit in manual_units}
+    observed_ids = {w["manual_unit_id_best_match"] for w in windows if w.get("manual_unit_id_best_match") in expected_ids}
+    expected_subsections = {unit.get("manual_subsection", "") for unit in manual_units if unit.get("manual_subsection")}
+    observed_subsections = {
+        unit.get("manual_subsection", "")
+        for unit in manual_units
+        if unit.get("manual_unit_id") in observed_ids and unit.get("manual_subsection")
+    }
+
+    manual_cov = (len(observed_ids) / len(expected_ids)) if expected_ids else 0.0
+    subsection_cov = (len(observed_subsections) / len(expected_subsections)) if expected_subsections else 0.0
+    evidence_density = (len(windows) / len(expected_ids)) if expected_ids else 0.0
+    manual_weight = get_float("fidelity", "manual_coverage_weight", 0.6)
+    subsection_weight = get_float("fidelity", "subsection_coverage_weight", 0.4)
+    high_cutoff = get_float("fidelity", "adherence_high_cutoff", 0.66)
+    moderate_cutoff = get_float("fidelity", "adherence_moderate_cutoff", 0.33)
+    combined_score = manual_weight * manual_cov + subsection_weight * subsection_cov
+    if combined_score >= high_cutoff:
+        adherence = "high"
+    elif combined_score >= moderate_cutoff:
+        adherence = "moderate"
+    else:
+        adherence = "low"
+
+    topic_ids = [str(topic.get("id", "")).strip() for topic in topics if str(topic.get("id", "")).strip()]
+    topic_labels = [str(topic.get("label", "")).strip() for topic in topics if str(topic.get("label", "")).strip()]
+    session_summary = session_summary_row.get("session_summary", "")
+    fidelity_query = build_session_fidelity_query(session_num, session_summary, topic_labels)
+
+    return {
+        "cycle_id": cycle_id,
+        "manual_session_num": session_num,
+        "manual_session_label": session_summary_row.get("session_label", f"Session {session_num}"),
+        "fidelity_query": fidelity_query,
+        "session_summary": session_summary,
+        "session_topic_ids": ";".join(topic_ids),
+        "session_topic_labels": ";".join(topic_labels),
+        "retrieved_evidence_count": str(len(windows)),
+        "expected_manual_unit_count": str(len(expected_ids)),
+        "matched_manual_unit_count": str(len(observed_ids)),
+        "manual_unit_coverage": f"{manual_cov:.3f}",
+        "expected_subsection_count": str(len(expected_subsections)),
+        "matched_subsection_count": str(len(observed_subsections)),
+        "subsection_coverage": f"{subsection_cov:.3f}",
+        "evidence_density": f"{evidence_density:.3f}",
         "adherence_score": f"{combined_score:.3f}",
         "adherence_label": adherence,
         "matched_manual_unit_ids": ";".join(sorted(observed_ids)),
@@ -320,13 +564,17 @@ def main() -> None:
         ensure_dir(cycle_dir)
 
         fidelity_rows: list[dict[str, Any]] = []
+        session_fidelity_rows: list[dict[str, Any]] = []
         question_rows: list[dict[str, Any]] = []
         evidence_rows: list[dict[str, Any]] = []
+        session_fidelity_evidence_rows: list[dict[str, Any]] = []
         question_json_rows: list[dict[str, Any]] = []
 
         topic_count = 0
         for session_num in session_numbers:
-            for topic in get_topic_entries_for_session(session_num):
+            session_topics = get_topic_entries_for_session(session_num)
+
+            for topic in session_topics:
                 topic_count += 1
                 if args.limit_topics and topic_count > args.limit_topics:
                     break
@@ -370,12 +618,13 @@ def main() -> None:
                             "score_topic": row.get("score_topic", ""),
                             "manual_unit_id_best_match": row.get("manual_unit_id_best_match", ""),
                             "manual_unit_match_score": row.get("manual_unit_match_score", ""),
-                            "excerpt": format_evidence_excerpt(row.get("text", "")),
-                        }
-                    )
+                            "text": row.get("text", ""),
+                                "excerpt": format_evidence_excerpt(row.get("text", "")),
+                            }
+                        )
 
                 for question_spec in PI_QUESTION_SPECS:
-                    query_text = question_spec["query_template"].format(session_num=session_num, topic_label=topic_label)
+                    query_text = build_pi_question_query(session_num, topic, question_spec)
                     question_windows = build_transcript_windows(
                         query_text,
                         topic_id=topic_id,
@@ -457,11 +706,61 @@ def main() -> None:
                                 "score_topic": row.get("score_topic", ""),
                                 "manual_unit_id_best_match": row.get("manual_unit_id_best_match", ""),
                                 "manual_unit_match_score": row.get("manual_unit_match_score", ""),
+                                "text": row.get("text", ""),
                                 "excerpt": format_evidence_excerpt(row.get("text", "")),
                             }
                         )
             if args.limit_topics and topic_count >= args.limit_topics:
                 break
+
+            session_summary_row = get_session_summary(session_num)
+            session_summary = session_summary_row.get("session_summary", "")
+            session_topic_labels = [str(topic.get("label", "")).strip() for topic in session_topics if str(topic.get("label", "")).strip()]
+            session_fidelity_query = build_session_fidelity_query(session_num, session_summary, session_topic_labels)
+            session_manual_units = get_manual_units_for_session(session_num)
+            session_fidelity_windows = build_session_fidelity_windows(
+                cycle_id=cycle_id,
+                session_num=session_num,
+                session_summary=session_summary,
+                session_topics=session_topics,
+                topk=args.fidelity_topk,
+                weight_doc=args.fidelity_weight_doc,
+                weight_topic=args.fidelity_weight_topic,
+                meta_rows=meta_rows,
+                path_lookup=path_lookup,
+                window=args.context_window,
+            )
+            session_fidelity_rows.append(
+                summarize_session_fidelity(
+                    cycle_id,
+                    session_num,
+                    session_topics,
+                    session_fidelity_windows,
+                    session_manual_units,
+                )
+            )
+            for row in session_fidelity_windows:
+                session_fidelity_evidence_rows.append(
+                    {
+                        "cycle_id": cycle_id,
+                        "manual_session_num": session_num,
+                        "manual_session_label": f"Session {session_num}",
+                        "analysis_mode": "session_fidelity",
+                        "query_text": session_fidelity_query,
+                        "source_topic_id": "",
+                        "source_topic_label": "",
+                        "retrieval_rank": row.get("retrieval_rank", ""),
+                        "session_id": row.get("session_id", ""),
+                        "speaker": row.get("speaker", ""),
+                        "score_combined": row.get("score_combined", ""),
+                        "score_doc": row.get("score_doc", ""),
+                        "score_topic": row.get("score_topic", ""),
+                        "manual_unit_id_best_match": row.get("manual_unit_id_best_match", ""),
+                        "manual_unit_match_score": row.get("manual_unit_match_score", ""),
+                        "text": row.get("text", ""),
+                        "excerpt": format_evidence_excerpt(row.get("text", "")),
+                    }
+                )
 
         write_csv(
             cycle_dir / "fidelity_summary.csv",
@@ -488,6 +787,32 @@ def main() -> None:
             fidelity_rows,
         )
         write_csv(
+            cycle_dir / "session_fidelity_summary.csv",
+            [
+                "cycle_id",
+                "manual_session_num",
+                "manual_session_label",
+                "fidelity_query",
+                "session_summary",
+                "session_topic_ids",
+                "session_topic_labels",
+                "retrieved_evidence_count",
+                "expected_manual_unit_count",
+                "matched_manual_unit_count",
+                "manual_unit_coverage",
+                "expected_subsection_count",
+                "matched_subsection_count",
+                "subsection_coverage",
+                "evidence_density",
+                "adherence_score",
+                "adherence_label",
+                "matched_manual_unit_ids",
+                "matched_subsections",
+                "sample_session_ids",
+            ],
+            session_fidelity_rows,
+        )
+        write_csv(
             cycle_dir / "pi_question_answers.csv",
             [
                 "cycle_id",
@@ -509,6 +834,29 @@ def main() -> None:
             question_rows,
         )
         write_csv(
+            cycle_dir / "session_fidelity_evidence.csv",
+            [
+                "cycle_id",
+                "manual_session_num",
+                "manual_session_label",
+                "analysis_mode",
+                "query_text",
+                "source_topic_id",
+                "source_topic_label",
+                "retrieval_rank",
+                "session_id",
+                "speaker",
+                "score_combined",
+                "score_doc",
+                "score_topic",
+                "manual_unit_id_best_match",
+                "manual_unit_match_score",
+                "text",
+                "excerpt",
+            ],
+            session_fidelity_evidence_rows,
+        )
+        write_csv(
             cycle_dir / "topic_evidence.csv",
             [
                 "cycle_id",
@@ -526,6 +874,7 @@ def main() -> None:
                 "score_topic",
                 "manual_unit_id_best_match",
                 "manual_unit_match_score",
+                "text",
                 "excerpt",
             ],
             evidence_rows,

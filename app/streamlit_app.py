@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import json
 from pathlib import Path
+import re
 import sys
 
 import pandas as pd
@@ -11,7 +12,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from rag_audio_analysis.chat_runner import run_chat_query
-from rag_audio_analysis.config import CYCLE_ANALYSIS_DIR, MANUAL_UNITS_CSV, TOPIC_CATALOG_CSV
+from rag_audio_analysis.config import CYCLE_ANALYSIS_DIR, MANUAL_UNITS_CSV, SESSION_SUMMARIES_CSV, TOPIC_CATALOG_CSV
 from rag_audio_analysis.settings import get_float, get_int, get_str
 
 
@@ -23,6 +24,7 @@ APP_CAPTION = get_str(
 )
 CYCLE_PREFIX = get_str("ui", "cycle_prefix", "PMHCycle")
 UI_EXCERPT_CHARS = get_int("prompting", "ui_excerpt_chars", 280)
+TOPIC_DEFINITION_EXCERPT_CHARS = 320
 
 st.set_page_config(page_title=APP_TITLE, layout="wide")
 st.title(APP_TITLE)
@@ -38,6 +40,7 @@ QUESTION_LABELS = {
 
 ANALYSIS_MODE_LABELS = {
     "fidelity": "Fidelity retrieval",
+    "session_fidelity": "Cycle-level manual-session fidelity",
     "pi_question": "PI-question retrieval",
 }
 
@@ -66,6 +69,14 @@ def get_excerpt(text: str, limit: int = 280) -> str:
 def human_label(value: str, mapping: dict[str, str]) -> str:
     value = str(value or "")
     return mapping.get(value, value)
+
+
+def numeric_sort_key(value: str):
+    text = str(value or "")
+    match = re.search(r"(\d+)", text)
+    if match:
+        return (0, int(match.group(1)), text.lower())
+    return (1, text.lower())
 
 
 def list_cycle_ids() -> list[str]:
@@ -115,8 +126,13 @@ def add_readable_columns(df: pd.DataFrame) -> pd.DataFrame:
 
     rename_map = {
         "cycle_id": "Cycle",
+        "manual_session_num": "Session number",
+        "manual_session_label": "Session",
         "session_num": "Session number",
         "session_label": "Session",
+        "session_topic_ids": "Session topic IDs",
+        "session_topic_labels": "Session topic labels",
+        "session_summary": "Session summary",
         "topic_id": "Topic ID",
         "topic_label": "Topic label",
         "fidelity_query": "Fidelity query",
@@ -127,6 +143,7 @@ def add_readable_columns(df: pd.DataFrame) -> pd.DataFrame:
         "expected_subsection_count": "Expected subsections",
         "matched_subsection_count": "Matched subsections",
         "subsection_coverage": "Subsection coverage",
+        "evidence_density": "Evidence density",
         "adherence_score": "Adherence score",
         "matched_manual_unit_ids": "Matched manual units",
         "matched_subsections": "Matched subsections",
@@ -138,6 +155,8 @@ def add_readable_columns(df: pd.DataFrame) -> pd.DataFrame:
         "manual_unit_ids": "Manual units cited",
         "manual_unit_id_best_match": "Best matching manual unit",
         "manual_unit_match_score": "Manual-unit similarity",
+        "source_topic_id": "Source topic ID",
+        "source_topic_label": "Source topic label",
         "retrieval_rank": "Retrieval rank",
         "session_id": "Transcript file",
         "speaker": "Speaker label",
@@ -155,28 +174,187 @@ def add_readable_columns(df: pd.DataFrame) -> pd.DataFrame:
     return view.rename(columns={k: v for k, v in rename_map.items() if k in view.columns})
 
 
+TOPIC_DEFINITION_STOPWORDS = {
+    "a",
+    "an",
+    "and",
+    "are",
+    "as",
+    "at",
+    "be",
+    "by",
+    "for",
+    "from",
+    "how",
+    "in",
+    "into",
+    "is",
+    "it",
+    "its",
+    "of",
+    "on",
+    "or",
+    "session",
+    "the",
+    "this",
+    "to",
+    "using",
+    "with",
+}
+
+
+def tokenize_topic_text(text: str) -> list[str]:
+    return [
+        token
+        for token in re.findall(r"[a-z0-9]+", str(text or "").lower())
+        if token and token not in TOPIC_DEFINITION_STOPWORDS
+    ]
+
+
+def split_summary_sentences(text: str) -> list[str]:
+    parts = re.split(r"(?<=[.!?])\s+", str(text or "").strip())
+    return [part.strip() for part in parts if part.strip()]
+
+
+def normalize_topic_label(topic_label: str) -> str:
+    label = str(topic_label or "").strip()
+    if not label:
+        return ""
+    label = label[0].lower() + label[1:]
+    label = re.sub(r"\bPA\b", "physical activity", label)
+    return label
+
+
+def clean_summary_fragment(text: str) -> str:
+    fragment = str(text or "").strip(" ,.;:")
+    replacements = [
+        r"^the session focuses on\s+",
+        r"^the session deepens\s+",
+        r"^the session also focuses on\s+",
+        r"^participants are introduced to\s+",
+        r"^participants discuss\s+",
+        r"^participants reflect on\s+",
+        r"^experiential practice includes\s+",
+        r"^additional experiential practice includes\s+",
+        r"^homework emphasizes\s+",
+        r"^the nutrition and physical activity component focuses on\s+",
+        r"^the nutrition component focuses on\s+",
+    ]
+    for pattern in replacements:
+        fragment = re.sub(pattern, "", fragment, flags=re.IGNORECASE)
+    return fragment.strip(" ,.;:")
+
+
+def sentence_fragments(text: str) -> list[str]:
+    fragments: list[str] = []
+    for sentence in split_summary_sentences(text):
+        parts = re.split(r";|, followed by |, with |, and ", sentence)
+        for part in parts:
+            cleaned = clean_summary_fragment(part)
+            if cleaned:
+                fragments.append(cleaned)
+    return fragments
+
+
+def choose_topic_context_fragments(topic_label: str, session_summary: str) -> list[str]:
+    topic_tokens = set(tokenize_topic_text(topic_label))
+    scored_fragments: list[tuple[int, int, str]] = []
+    for idx, fragment in enumerate(sentence_fragments(session_summary)):
+        fragment_tokens = set(tokenize_topic_text(fragment))
+        overlap = len(topic_tokens & fragment_tokens)
+        bonus = 1 if normalize_topic_label(topic_label) in fragment.lower() else 0
+        score = overlap * 3 + bonus
+        scored_fragments.append((score, -idx, fragment))
+
+    scored_fragments.sort(reverse=True)
+    chosen = [fragment for score, _, fragment in scored_fragments if score > 0][:2]
+    if chosen:
+        return chosen
+    fallback = [clean_summary_fragment(sentence) for sentence in split_summary_sentences(session_summary)[:2]]
+    return [fragment for fragment in fallback if fragment]
+
+
+def derive_topic_definition(topic_label: str, session_summary: str) -> str:
+    topic_label = str(topic_label or "").strip()
+    session_summary = str(session_summary or "").strip()
+    if not topic_label:
+        return get_excerpt(session_summary, TOPIC_DEFINITION_EXCERPT_CHARS)
+    if not session_summary:
+        return f"Focuses on {normalize_topic_label(topic_label)} in this session."
+
+    topic_phrase = normalize_topic_label(topic_label)
+    context_fragments = choose_topic_context_fragments(topic_label, session_summary)
+    context_text = "; ".join(context_fragments).strip()
+    if not context_text:
+        context_text = clean_summary_fragment(session_summary)
+
+    gloss = f"Focuses on {topic_phrase} in the context of {context_text}."
+    gloss = re.sub(r"\s+", " ", gloss).strip()
+    return get_excerpt(gloss, TOPIC_DEFINITION_EXCERPT_CHARS)
+
+
+def build_topic_catalog_for_display(topic_catalog: pd.DataFrame) -> pd.DataFrame:
+    if topic_catalog.empty:
+        return topic_catalog
+
+    session_summaries = load_csv(SESSION_SUMMARIES_CSV)
+    if session_summaries.empty:
+        view = topic_catalog.copy()
+        if "topic_definition" in view.columns:
+            view["topic_definition"] = view.apply(
+                lambda row: row["topic_definition"]
+                if str(row.get("topic_definition", "")).strip()
+                else f"This topic centers on {str(row.get('topic_label', '')).strip().lower()}."
+                if str(row.get("topic_label", "")).strip()
+                else "",
+                axis=1,
+            )
+        return view
+
+    view = topic_catalog.copy()
+    summary_lookup = {
+        str(row.get("session_num", "")).strip(): str(row.get("session_summary", "")).strip()
+        for _, row in session_summaries.iterrows()
+    }
+    if "topic_definition" not in view.columns:
+        view["topic_definition"] = ""
+
+    view["topic_definition"] = view.apply(
+        lambda row: str(row.get("topic_definition", "")).strip()
+        or derive_topic_definition(
+            str(row.get("topic_label", "")).strip(),
+            summary_lookup.get(str(row.get("session_num", "")).strip(), ""),
+        ),
+        axis=1,
+    )
+    return view
+
+
 def render_key() -> None:
     with st.expander("How to read this app", expanded=False):
         st.markdown("**What is shown here**")
-        st.write("This app now centers on the automated session-topic evidence pipeline rather than the older manual review queue.")
+        st.write("This app now centers on an automated cycle-level analysis pipeline rather than the older manual review queue.")
         st.markdown("**Fidelity values**")
-        st.write("Manual-unit coverage: matched manual units / expected manual units for a session-topic pair.")
-        st.write("Subsection coverage: matched manual subsections / expected manual subsections for a session-topic pair.")
+        st.write("The primary fidelity view is cycle-level alignment to session-structured manual content.")
+        st.write("Manual-unit coverage: matched manual units / expected manual units for a manual session within a cycle.")
+        st.write("Subsection coverage: matched manual subsections / expected manual subsections for a manual session within a cycle.")
         st.write("Adherence score: `0.6 * manual-unit coverage + 0.4 * subsection coverage`.")
         st.write("Adherence label: `high` if score >= 0.66, `moderate` if >= 0.33, otherwise `low`.")
         st.markdown("**PI-question answers**")
         st.write("These are automated `gpt-oss:120b` summaries constrained to retrieved evidence and matching manual units.")
         st.markdown("**Retrieved evidence**")
-        st.write("These are the evidence windows pulled from transcripts for either fidelity mode or PI-question mode.")
+        st.write("These are the evidence windows pulled from transcripts for cycle-level fidelity, topic-level fidelity, or PI-question mode.")
 
 
 manual_units = load_csv(MANUAL_UNITS_CSV)
-topic_catalog = load_csv(TOPIC_CATALOG_CSV)
+topic_catalog = build_topic_catalog_for_display(load_csv(TOPIC_CATALOG_CSV))
 cycle_ids = list_cycle_ids()
 
 all_fidelity = load_all_cycle_files("fidelity_summary.csv")
+all_session_fidelity = load_all_cycle_files("session_fidelity_summary.csv")
 all_pi_answers = load_all_cycle_files("pi_question_answers.csv")
 all_evidence = load_all_cycle_files("topic_evidence.csv")
+all_session_evidence = load_all_cycle_files("session_fidelity_evidence.csv")
 
 with st.sidebar:
     st.header("Filters")
@@ -184,13 +362,16 @@ with st.sidebar:
     selected_cycle = st.selectbox("Cycle", cycle_options, index=1 if len(cycle_options) > 1 else 0)
 
     current_fidelity = all_fidelity if selected_cycle == "All cycles" else load_cycle_file(selected_cycle, "fidelity_summary.csv")
+    current_session_fidelity = all_session_fidelity if selected_cycle == "All cycles" else load_cycle_file(selected_cycle, "session_fidelity_summary.csv")
     current_answers = all_pi_answers if selected_cycle == "All cycles" else load_cycle_file(selected_cycle, "pi_question_answers.csv")
     current_evidence = all_evidence if selected_cycle == "All cycles" else load_cycle_file(selected_cycle, "topic_evidence.csv")
+    current_session_evidence = all_session_evidence if selected_cycle == "All cycles" else load_cycle_file(selected_cycle, "session_fidelity_evidence.csv")
 
     session_options = ["All sessions"]
-    session_source = current_fidelity if not current_fidelity.empty else current_answers
-    if not session_source.empty and "session_num" in session_source.columns:
-        session_options += sorted(x for x in session_source["session_num"].astype(str).unique() if x)
+    session_source = current_session_fidelity if not current_session_fidelity.empty else (current_fidelity if not current_fidelity.empty else current_answers)
+    session_col = "manual_session_num" if not current_session_fidelity.empty and "manual_session_num" in current_session_fidelity.columns else "session_num"
+    if not session_source.empty and session_col in session_source.columns:
+        session_options += sorted((x for x in session_source[session_col].astype(str).unique() if x), key=numeric_sort_key)
     selected_session = st.selectbox("Session number", session_options)
 
     topic_options = ["All topics"]
@@ -200,22 +381,29 @@ with st.sidebar:
     selected_topic = st.selectbox("Topic ID", topic_options)
 
 
-def apply_common_filters(df: pd.DataFrame) -> pd.DataFrame:
+def apply_common_filters(df: pd.DataFrame, include_topic: bool = True) -> pd.DataFrame:
     if df.empty:
         return df
     view = df.copy()
     if selected_cycle != "All cycles" and "cycle_id" in view.columns:
         view = view[view["cycle_id"].astype(str) == selected_cycle]
-    if selected_session != "All sessions" and "session_num" in view.columns:
-        view = view[view["session_num"].astype(str) == selected_session]
-    if selected_topic != "All topics" and "topic_id" in view.columns:
+    if selected_session != "All sessions":
+        if "session_num" in view.columns:
+            view = view[view["session_num"].astype(str) == selected_session]
+        elif "manual_session_num" in view.columns:
+            view = view[view["manual_session_num"].astype(str) == selected_session]
+    if include_topic and selected_topic != "All topics" and "topic_id" in view.columns:
         view = view[view["topic_id"].astype(str) == selected_topic]
     return view
 
 
 fidelity_view = apply_common_filters(all_fidelity)
+session_fidelity_view = apply_common_filters(all_session_fidelity, include_topic=False)
 answers_view = apply_common_filters(all_pi_answers)
-evidence_view = apply_common_filters(all_evidence)
+topic_evidence_view = apply_common_filters(all_evidence)
+session_evidence_view = apply_common_filters(all_session_evidence, include_topic=False)
+evidence_frames = [df for df in [topic_evidence_view, session_evidence_view] if not df.empty]
+evidence_view = pd.concat(evidence_frames, ignore_index=True) if evidence_frames else pd.DataFrame()
 manual_view = manual_units.copy()
 if selected_session != "All sessions" and "manual_week" in manual_view.columns:
     manual_view = manual_view[manual_view["manual_week"].astype(str) == selected_session]
@@ -225,7 +413,7 @@ if selected_topic != "All topics" and "topic_id" in manual_view.columns:
 
 m1, m2, m3, m4 = st.columns(4)
 m1.metric("Cycle folders", len(cycle_ids))
-m2.metric("Fidelity rows", len(fidelity_view.index))
+m2.metric("Manual-session fidelity rows", len(session_fidelity_view.index))
 m3.metric("PI-question rows", len(answers_view.index))
 m4.metric("Evidence rows", len(evidence_view.index))
 
@@ -265,47 +453,46 @@ with tab1:
             hide_index=True,
         )
 
-    st.markdown("**Fidelity summary across current filters**")
-    if fidelity_view.empty:
+    st.markdown("**Cycle-level manual-session fidelity across current filters**")
+    if session_fidelity_view.empty:
         st.info("No fidelity outputs match the current filters yet.")
     else:
-        fidelity_chart = fidelity_view.copy()
+        fidelity_chart = session_fidelity_view.copy()
         fidelity_chart["adherence_score"] = pd.to_numeric(fidelity_chart["adherence_score"], errors="coerce").fillna(0)
-        st.bar_chart(fidelity_chart.groupby("topic_id")["adherence_score"].mean().sort_values(ascending=False))
+        st.bar_chart(fidelity_chart.groupby("manual_session_label")["adherence_score"].mean().sort_values(ascending=False))
         overview_cols = [
             "cycle_id",
-            "session_num",
-            "topic_id",
-            "topic_label",
+            "manual_session_num",
+            "manual_session_label",
             "retrieved_evidence_count",
             "manual_unit_coverage",
             "subsection_coverage",
+            "evidence_density",
             "adherence_score",
             "adherence_label",
         ]
         st.dataframe(
-            add_readable_columns(fidelity_view[[col for col in overview_cols if col in fidelity_view.columns]]),
+            add_readable_columns(session_fidelity_view[[col for col in overview_cols if col in session_fidelity_view.columns]]),
             use_container_width=True,
             hide_index=True,
         )
 
 with tab2:
-    st.subheader("Session-topic fidelity")
+    st.subheader("Cycle-level manual-session fidelity")
     render_key()
-    if fidelity_view.empty:
+    st.caption("Transcript evidence is drawn from the full cycle corpus and compared against manual units grouped by manual session.")
+    if session_fidelity_view.empty:
         st.info("No fidelity rows are available for the current filters.")
     else:
-        fidelity_df = fidelity_view.copy()
+        fidelity_df = session_fidelity_view.copy()
         fidelity_df["adherence_score"] = pd.to_numeric(fidelity_df["adherence_score"], errors="coerce").fillna(0)
         st.dataframe(
             add_readable_columns(
                 fidelity_df[
                     [
                         "cycle_id",
-                        "session_num",
-                        "session_label",
-                        "topic_id",
-                        "topic_label",
+                        "manual_session_num",
+                        "manual_session_label",
                         "retrieved_evidence_count",
                         "expected_manual_unit_count",
                         "matched_manual_unit_count",
@@ -313,10 +500,11 @@ with tab2:
                         "expected_subsection_count",
                         "matched_subsection_count",
                         "subsection_coverage",
+                        "evidence_density",
                         "adherence_score",
                         "adherence_label",
                     ]
-                ].sort_values(["cycle_id", "session_num", "topic_id"])
+                ].sort_values(["cycle_id", "manual_session_num"])
             ),
             use_container_width=True,
             hide_index=True,
@@ -324,24 +512,26 @@ with tab2:
 
         row_options = fidelity_df.index.tolist()
         selected_row_idx = st.selectbox(
-            "Select a session-topic row for detail",
+            "Select a cycle/manual-session row for detail",
             row_options,
-            format_func=lambda idx: f"{fidelity_df.at[idx, 'cycle_id']} | Session {fidelity_df.at[idx, 'session_num']} | {fidelity_df.at[idx, 'topic_label']}",
+            format_func=lambda idx: f"{fidelity_df.at[idx, 'cycle_id']} | Session {fidelity_df.at[idx, 'manual_session_num']}",
         )
         row = fidelity_df.loc[selected_row_idx]
 
-        d1, d2, d3 = st.columns(3)
+        d1, d2, d3, d4 = st.columns(4)
         d1.metric("Manual-unit coverage", row.get("manual_unit_coverage", ""))
         d2.metric("Subsection coverage", row.get("subsection_coverage", ""))
-        d3.metric("Adherence", human_label(str(row.get("adherence_label", "")), ADHERENCE_LABELS))
+        d3.metric("Evidence density", row.get("evidence_density", ""))
+        d4.metric("Adherence", human_label(str(row.get("adherence_label", "")), ADHERENCE_LABELS))
 
         st.markdown("**Fidelity query**")
         st.code(str(row.get("fidelity_query", "")))
+        st.markdown("**Session summary used for retrieval**")
+        st.write(str(row.get("session_summary", "")) or "No session summary is saved yet for this manual session.")
 
         matched_ids = [x for x in str(row.get("matched_manual_unit_ids", "")).split(";") if x]
         expected_units = manual_units.copy()
-        expected_units = expected_units[expected_units["manual_week"].astype(str) == str(row.get("session_num", ""))]
-        expected_units = expected_units[expected_units["topic_id"].astype(str) == str(row.get("topic_id", ""))]
+        expected_units = expected_units[expected_units["manual_week"].astype(str) == str(row.get("manual_session_num", ""))]
 
         c1, c2 = st.columns(2)
         with c1:
@@ -355,7 +545,6 @@ with tab2:
                             [
                                 "manual_unit_id",
                                 "manual_subsection",
-                                "topic_match_score",
                                 "manual_text_short",
                             ]
                         ]
@@ -375,7 +564,6 @@ with tab2:
                             [
                                 "manual_unit_id",
                                 "manual_subsection",
-                                "topic_match_score",
                                 "manual_text_short",
                             ]
                         ]
@@ -383,6 +571,62 @@ with tab2:
                     use_container_width=True,
                     hide_index=True,
                 )
+
+        supporting_evidence = session_evidence_view.copy()
+        if not supporting_evidence.empty:
+            supporting_evidence = supporting_evidence[
+                (supporting_evidence["analysis_mode"].astype(str) == "session_fidelity")
+                & (supporting_evidence["cycle_id"].astype(str) == str(row.get("cycle_id", "")))
+                & (supporting_evidence["manual_session_num"].astype(str) == str(row.get("manual_session_num", "")))
+            ]
+        if supporting_evidence.empty:
+            st.info("No supporting fidelity evidence rows were found for this cycle/manual-session pair.")
+        else:
+            sorted_supporting = supporting_evidence.sort_values(
+                by=[col for col in ["retrieval_rank"] if col in supporting_evidence.columns] or supporting_evidence.columns.tolist()
+            )
+            matched_supporting = sorted_supporting[
+                sorted_supporting["manual_unit_id_best_match"].astype(str).str.strip().ne("")
+            ]
+            unmatched_supporting = sorted_supporting[
+                sorted_supporting["manual_unit_id_best_match"].astype(str).str.strip().eq("")
+            ]
+
+            st.markdown("**Matched evidence snippets**")
+            if matched_supporting.empty:
+                st.info("No retrieved evidence snippets were matched to a manual unit for this cycle/manual-session row.")
+            else:
+                for _, evidence_row in matched_supporting.iterrows():
+                    full_text = str(evidence_row.get("text", "") or "").strip()
+                    excerpt_text = str(evidence_row.get("excerpt", "") or "").strip()
+                    visible_excerpt = full_text or excerpt_text
+                    st.markdown(
+                        f"**Rank {evidence_row.get('retrieval_rank', '')}** | "
+                        f"Transcript `{evidence_row.get('session_id', '')}` | "
+                        f"Manual `{evidence_row.get('manual_unit_id_best_match', '')}`"
+                    )
+                    st.write(get_excerpt(visible_excerpt, 700) if visible_excerpt else "No excerpt available.")
+                    with st.expander("Show full evidence text", expanded=False):
+                        st.write(full_text or excerpt_text or "No full evidence text is available in the current cycle output.")
+                    st.divider()
+
+            st.markdown("**Unmatched retrieved snippets**")
+            if unmatched_supporting.empty:
+                st.info("All retrieved snippets for this row were matched to a manual unit.")
+            else:
+                for _, evidence_row in unmatched_supporting.iterrows():
+                    full_text = str(evidence_row.get("text", "") or "").strip()
+                    excerpt_text = str(evidence_row.get("excerpt", "") or "").strip()
+                    visible_excerpt = full_text or excerpt_text
+                    st.markdown(
+                        f"**Rank {evidence_row.get('retrieval_rank', '')}** | "
+                        f"Transcript `{evidence_row.get('session_id', '')}` | "
+                        "No manual-unit match"
+                    )
+                    st.write(get_excerpt(visible_excerpt, 700) if visible_excerpt else "No excerpt available.")
+                    with st.expander("Show full evidence text", expanded=False):
+                        st.write(full_text or excerpt_text or "No full evidence text is available in the current cycle output.")
+                    st.divider()
 
 with tab3:
     st.subheader("PI-question answers")
@@ -572,7 +816,10 @@ with tab5:
     else:
         manual_df = manual_view.copy()
 
-        session_choices = ["All manual sessions"] + sorted(x for x in manual_units["manual_section"].astype(str).unique() if x)
+        session_choices = ["All manual sessions"] + sorted(
+            (x for x in manual_units["manual_section"].astype(str).unique() if x),
+            key=numeric_sort_key,
+        )
         selected_manual_session = st.selectbox("Manual session", session_choices)
         if selected_manual_session != "All manual sessions":
             manual_df = manual_df[manual_df["manual_section"].astype(str) == selected_manual_session]
@@ -585,15 +832,19 @@ with tab5:
         if manual_df.empty:
             st.info("No manual units match the current filters.")
         else:
+            sort_cols = [col for col in ["manual_week", "manual_chunk_index", "manual_unit_id"] if col in manual_df.columns]
+            if sort_cols:
+                manual_df = manual_df.copy()
+                for col in [c for c in ["manual_week", "manual_chunk_index"] if c in manual_df.columns]:
+                    manual_df[col] = pd.to_numeric(manual_df[col], errors="coerce")
+                manual_df = manual_df.sort_values(sort_cols, kind="stable")
             st.dataframe(
                 add_readable_columns(
                     manual_df[
                         [
                             "manual_unit_id",
-                            "topic_id",
                             "manual_section",
                             "manual_subsection",
-                            "topic_match_score",
                             "manual_text_short",
                         ]
                     ]
@@ -613,7 +864,6 @@ with tab5:
             m1.metric("Manual unit", str(row.get("manual_unit_id", "")))
             m2.metric("Session", str(row.get("manual_section", "")))
             m3.metric("Subsection", str(row.get("manual_subsection", "")))
-            st.write(f"Topic similarity: {row.get('topic_match_score', '') or 'N/A'}")
             st.markdown("**Full manual content**")
             st.write(str(row.get("manual_text", "")))
 
@@ -649,23 +899,32 @@ with tab6:
             height=120,
             placeholder="Example: How do participants talk about stress affecting eating in Cycle 1?",
         )
-        c1, c2, c3 = st.columns(3)
-        chat_cycle = c1.text_input("Cycle filter", value=default_cycle, help="Leave blank to search across all cycles.")
-        chat_topk = c2.number_input("Top-k", min_value=1, max_value=50, value=chat_defaults["topk"], step=1)
-        chat_include_manual = c3.checkbox(
-            "Also search manual passages",
-            value=chat_defaults["include_manual"],
-            help="When on, retrieval can return manual sections alongside transcript evidence. When off, results are transcript-only.",
+        cycle_dropdown_options = ["All cycles", "PMHCycle1", "PMHCycle2", "PMHCycle3", "PMHCycle4", "PMHCycle5"]
+        default_cycle_option = default_cycle if default_cycle in cycle_dropdown_options else "All cycles"
+        chat_cycle_option = st.selectbox(
+            "Cycle filter",
+            cycle_dropdown_options,
+            index=cycle_dropdown_options.index(default_cycle_option),
+            help="Choose one cycle to narrow retrieval, or leave it on All cycles.",
         )
 
-        c4, c5, c6 = st.columns(3)
-        chat_weight_doc = c4.number_input("Document weight", min_value=0.0, max_value=2.0, value=float(chat_defaults["weight_doc"]), step=0.1)
-        chat_weight_topic = c5.number_input("Topic weight", min_value=0.0, max_value=2.0, value=float(chat_defaults["weight_topic"]), step=0.1)
-        chat_answer_with_model = c6.checkbox(
-            "Generate answer with gpt-oss:120b",
-            value=chat_defaults["answer_with_model"],
-            help="When on, the app sends the retrieved evidence to the model for a grounded answer. When off, the app only shows retrieved evidence.",
-        )
+        with st.expander("Advanced controls", expanded=False):
+            c1, c2 = st.columns(2)
+            chat_topk = c1.number_input("Top-k", min_value=1, max_value=50, value=chat_defaults["topk"], step=1)
+            chat_include_manual = c2.checkbox(
+                "Also search manual passages",
+                value=chat_defaults["include_manual"],
+                help="When on, retrieval can return manual sections alongside transcript evidence. When off, results are transcript-only.",
+            )
+
+            c3, c4, c5 = st.columns(3)
+            chat_weight_doc = c3.number_input("Document weight", min_value=0.0, max_value=2.0, value=float(chat_defaults["weight_doc"]), step=0.1)
+            chat_weight_topic = c4.number_input("Topic weight", min_value=0.0, max_value=2.0, value=float(chat_defaults["weight_topic"]), step=0.1)
+            chat_answer_with_model = c5.checkbox(
+                "Generate answer with gpt-oss:120b",
+                value=chat_defaults["answer_with_model"],
+                help="When on, the app sends the retrieved evidence to the model for a grounded answer. When off, the app only shows retrieved evidence.",
+            )
 
         submit_chat = st.form_submit_button("Run RAG chat")
 
@@ -677,7 +936,7 @@ with tab6:
                 with st.spinner("Running retrieval and preparing results..."):
                     payload = run_chat_query(
                         question=question.strip(),
-                        cycle_id=chat_cycle.strip(),
+                        cycle_id="" if chat_cycle_option == "All cycles" else chat_cycle_option,
                         topk=int(chat_topk),
                         weight_doc=float(chat_weight_doc),
                         weight_topic=float(chat_weight_topic),
