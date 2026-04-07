@@ -363,9 +363,12 @@ def build_question_prompt(
             '  "evidence_count": 0,',
             '  "evidence_refs": ["E1"],',
             '  "manual_unit_ids": ["MAN_0001"],',
-            '  "confidence": "low|medium|high"',
+            '  "confidence": "low|medium|high",',
+            '  "confidence_explanation": "short sentence explaining why that confidence was chosen; cite evidence refs if relevant",',
             '}',
             "Base the answer only on the retrieved evidence and manual units shown above. If evidence is weak, say so in the summary.",
+            "Include inline evidence refs in the `answer_summary` next to the claims they support (for example: 'The parent described practicing mindful breathing with their child (E1)').",
+            "For the confidence field include an explanatory sentence in `confidence_explanation` that references evidence refs (for example: 'medium — E2 and E4 show clear facilitator modeling; E5 is noisy').",
         ]
     )
     return "\n".join(parts)
@@ -714,11 +717,38 @@ def main() -> None:
                                 ollama_remote_bin=args.ollama_remote_bin,
                             )
                         )
-
                     answer_summary = answer_payload.get("answer_summary", "")
                     confidence = answer_payload.get("confidence", "")
+                    confidence_explanation = answer_payload.get("confidence_explanation", "")
+
+                    # If no model was called or no answer produced, provide an explicit placeholder
+                    # so the UI shows a clear message instead of a blank cell.
+                    if not answer_summary and not question_windows:
+                        answer_summary = "No retrieved evidence was found for this question."
+                        confidence_explanation = "No evidence — model not invoked."
                     evidence_refs = ";".join(answer_payload.get("evidence_refs", [])) if isinstance(answer_payload.get("evidence_refs"), list) else ""
                     manual_ids = ";".join(answer_payload.get("manual_unit_ids", [])) if isinstance(answer_payload.get("manual_unit_ids"), list) else ""
+
+                    # Ensure evidence refs appear in the saved answer_summary for easier reading.
+                    if evidence_refs:
+                        # if evidence refs not already mentioned, append them
+                        if evidence_refs not in (answer_summary or ""):
+                            sep = " " if answer_summary and not answer_summary.endswith(".") else " "
+                            answer_summary = (answer_summary or "") + f"{sep}Evidence refs: {evidence_refs}"
+                    # Fallbacks for missing confidence_explanation or missing model answers.
+                    if not confidence_explanation:
+                        # If the parsed payload contains a raw_response (non-JSON), note that.
+                        if isinstance(answer_payload, dict) and answer_payload.get("raw_response"):
+                            confidence_explanation = "Model returned a non-JSON response; see raw_response for details."
+                        elif answer_payload:
+                            confidence_explanation = "No confidence explanation provided."
+
+                    # If the model produced no answer but evidence windows existed, mark that explicitly.
+                    if not answer_summary and question_windows:
+                        if isinstance(answer_payload, dict) and answer_payload.get("raw_response"):
+                            answer_summary = "Model returned a non-JSON response; see raw_response."
+                        else:
+                            answer_summary = "Model did not produce an answer."
                     question_rows.append(
                         {
                             "cycle_id": cycle_id,
@@ -733,6 +763,7 @@ def main() -> None:
                             "prompt_text": prompt,
                             "answer_summary": answer_summary,
                             "confidence": confidence,
+                            "confidence_explanation": confidence_explanation,
                             "evidence_refs": evidence_refs,
                             "manual_unit_ids": manual_ids,
                             "raw_response": json.dumps(answer_payload, ensure_ascii=False) if answer_payload else "",
@@ -1014,6 +1045,7 @@ def main() -> None:
                     "prompt_text",
                     "answer_summary",
                     "confidence",
+                    "confidence_explanation",
                     "evidence_refs",
                     "manual_unit_ids",
                     "raw_response",

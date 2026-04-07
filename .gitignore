@@ -10,3 +10,5 @@ app/streamlit.log
 
 *.pyc
 *.pyo
+
+analysis/

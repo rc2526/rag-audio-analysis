@@ -398,12 +398,141 @@ The PI question:
 
 is not a true frequency question under the current top-`k` retrieval design.
 
+## Session-fidelity generation ("Generation Grade") — quick runbook
+
+Use this section as the canonical quick-run instructions for the Generation Grade flow (fidelity retrieval + optional generation adjudication). These snippets assume you are in the repository root and using the repo venv (`.venv`).
+
+- Run fidelity only for a set of cycles (merge-mode, preserves unrelated rows) and log to `run_cycle_fidelity.log`:
+
+```zsh
+export PYTHONPATH="$PWD"
+set -o pipefail
+.venv/bin/python scripts/run_cycle_analysis.py \
+  --cycles 2 3 4 5 \
+  --mode fidelity \
+  --fidelity-ollama-model gpt-oss:120b \
+  2>&1 | tee -a run_cycle_fidelity.log
+```
+
+- Run targeted PI question(s) (merge-mode) for sessions 1 & 2 and append logs to `run_cycle_pi.log`:
+
+```zsh
+export PYTHONPATH="$PWD"
+.venv/bin/python scripts/run_cycle_analysis.py \
+  --cycles 1 --session-num 1 2 --mode pi \
+  --question-id facilitator_delivery participant_practice \
+  --ollama-model gpt-oss:120b |& tee -a run_cycle_pi.log
+```
+
+- Force-rewrite a cycle's PI CSV (use only when you intend to replace the file):
+
+```zsh
+export PYTHONPATH="$PWD"
+.venv/bin/python scripts/run_cycle_analysis.py \
+  --cycles 1 --session-num 1 2 --mode pi \
+  --question-id participant_child_home \
+  --ollama-model gpt-oss:120b --overwrite |& tee -a run_cycle_pi_overwrite.log
+```
+
+- After any run, rebuild aggregated summary tables (safe, quick):
+
+```zsh
+export PYTHONPATH="$PWD"
+.venv/bin/python scripts/aggregate_cycle_outputs.py
+```
+
+- Restart Streamlit (repo venv) so the app reads refreshed summary files:
+
+```zsh
+export PYTHONPATH="$PWD"
+.venv/bin/python -m streamlit run app/streamlit_app.py
+```
+
+Notes
+- Merge-mode (no `--overwrite`) preserves unrelated rows: the script removes rows matching the targeted filters and appends new rows, then writes the file with the existing rows intact.
+- `--overwrite` writes only the rows produced by the current run and will drop previously saved rows that you did not regenerate.
+- Use the log files (`run_cycle_fidelity.log`, `run_cycle_pi.log`, `run_cycle_pi_overwrite.log`) and `tail -f` to monitor progress in real time.
+- Per-session loops give clearer per-session start/end markers but reload embeddings/models per invocation and are much slower than single-shot runs that process many sessions/cycles at once.
+
+Quick verification
+- Check the PI CSV header contains the new `confidence_explanation` column:
+
+```zsh
+head -n1 data/derived/cycle_analysis/PMHCycle1/pi_question_answers.csv
+```
+
+- Inspect any PI rows for a given session:
+
+```zsh
+grep -E 'participant_child_home|facilitator_delivery|participant_practice' data/derived/cycle_analysis/PMHCycle1/pi_question_answers.csv | grep ',1,' | sed -n '1,20p'
+```
+
+If anything here looks stale or you want the runbook exported elsewhere, say where and I'll add it.
+
 It currently behaves more like a qualitative evidence question than a count/rate estimate.
 
 If revisited later, either:
 
 - reword it to match retrieval-based evidence
 - or build a separate frequency-style metric outside the current PI QA setup
+
+## Session-fidelity generation ("Generation Grade") — quick runbook
+
+When you want the generation-backed session-level adjudication (Generation Grade) alongside the existing retrieval metrics, follow this small runbook from the project root.
+
+Steps
+
+- Run a narrow session-level fidelity pass (adds retrieval-based session metrics).
+- Optionally run PI passes if you want updated PI outputs.
+- Run the aggregator to refresh summary tables.
+- Restart or refresh the Streamlit app to see the Generation Grade fields in the UI.
+
+Commands (recommended — use the repo root and the project's `.venv`):
+
+```zsh
+# 1) session-level fidelity with generation enabled for session 1
+PYTHONPATH="$PWD" .venv/bin/python scripts/run_cycle_analysis.py \
+  --cycles 1 --session-num 1 --mode fidelity --overwrite \
+  --fidelity-ollama-model gpt-oss:120b
+
+# 2) (optional) run PI passes for the same session
+PYTHONPATH="$PWD" .venv/bin/python scripts/run_cycle_analysis.py \
+  --cycles 1 --session-num 1 --mode pi --overwrite --ollama-model gpt-oss:120b
+
+# 3) aggregate per-cycle outputs into summary tables
+PYTHONPATH="$PWD" .venv/bin/python scripts/aggregate_cycle_outputs.py
+
+# 4) restart Streamlit (foreground)
+PYTHONPATH="$PWD" .venv/bin/python -m streamlit run app/streamlit_app.py
+
+# 4b) or run headless on port 8501
+PYTHONPATH="$PWD" nohup .venv/bin/python -m streamlit run app/streamlit_app.py --server.port 8501 --server.address 0.0.0.0 &> /tmp/rag_audio_streamlit.log &
+```
+
+Quick verification
+
+- Confirm per-cycle outputs were written:
+
+```zsh
+ls -la data/derived/cycle_analysis/PMHCycle1
+head -n 6 data/derived/cycle_analysis/PMHCycle1/session_fidelity_summary.csv
+head -n 6 data/derived/cycle_analysis/PMHCycle1/session_fidelity_evidence.csv
+```
+
+- Confirm aggregated summary tables were written:
+
+```zsh
+ls -la data/derived/cycle_analysis/summary
+head -n 6 data/derived/cycle_analysis/summary/table_cycle_manual_session_fidelity.csv
+```
+
+Notes
+
+- The generation step is enabled by passing `--fidelity-ollama-model` to `run_cycle_analysis.py`. The generated fields are additive: the original retrieval-based scores remain and the new generation fields are saved in the same session-level CSVs under columns prefixed with `adjudication_` (now labeled in the UI as "Generation Grade").
+- For session-level prompts we include the full manual-unit set for the session (no small-cap truncation).
+- If imports or dependencies fail, run `.venv/bin/pip install -r requirements.txt` inside the project venv and retry.
+
+If you want, I can extract this section into a separate `README_RUNBOOK.md` instead of editing `AGENTS.md`.
 
 ## If Work Resumes Later
 

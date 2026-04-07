@@ -144,7 +144,7 @@ def add_readable_columns(df: pd.DataFrame) -> pd.DataFrame:
         "topic_id": "Topic ID",
         "topic_label": "Topic label",
         "fidelity_query": "Fidelity query",
-        "retrieved_evidence_count": "Retrieved evidence windows",
+        "retrieved_evidence_count": "Retrieved evidence units",
         "expected_manual_unit_count": "Expected manual units",
         "matched_manual_unit_count": "Matched manual units",
         "manual_unit_coverage": "Manual-unit coverage",
@@ -162,6 +162,7 @@ def add_readable_columns(df: pd.DataFrame) -> pd.DataFrame:
         "adjudication_manual_unit_ids": "Generation manual units",
         "query_text": "Query text",
         "answer_summary": "Automated answer",
+    "confidence_explanation": "Confidence explanation",
         "confidence": "Model confidence",
         "evidence_refs": "Evidence refs",
         "manual_unit_ids": "Manual units cited",
@@ -188,8 +189,6 @@ def add_readable_columns(df: pd.DataFrame) -> pd.DataFrame:
 
 def render_key() -> None:
     with st.expander("How to read this app", expanded=False):
-        st.markdown("**What is shown here**")
-        st.write("This app now centers on an automated cycle-level analysis pipeline rather than the older manual review queue.")
         st.markdown("**Fidelity values**")
         st.write("The primary fidelity view is cycle-level alignment to session-structured manual content.")
         st.write("Manual-unit coverage: matched manual units / expected manual units for a manual session within a cycle.")
@@ -199,7 +198,7 @@ def render_key() -> None:
         st.markdown("**PI-question answers**")
         st.write("These are automated `gpt-oss:120b` summaries constrained to retrieved evidence and matching manual units.")
         st.markdown("**Retrieved evidence**")
-        st.write("These are the evidence windows pulled from transcripts for cycle-level fidelity, topic-level fidelity, or PI-question mode.")
+        st.write("These are the evidence windows pulled from transcripts for cycle-level fidelity or PI-question mode.")
 
 
 manual_units = load_csv(MANUAL_UNITS_CSV)
@@ -539,21 +538,21 @@ with tab3:
         if answer_df.empty:
             st.info("No PI-question rows match the current filters.")
         else:
+            # show full answer_summary and confidence_explanation in the PI table
+            display_cols = [
+                "cycle_id",
+                "session_num",
+                "topic_id",
+                "topic_label",
+                "question_id",
+                "retrieved_evidence_count",
+                "confidence",
+                "confidence_explanation",
+                "answer_summary",
+            ]
+            available_cols = [c for c in display_cols if c in answer_df.columns]
             st.dataframe(
-                add_readable_columns(
-                    answer_df[
-                        [
-                            "cycle_id",
-                            "session_num",
-                            "topic_id",
-                            "topic_label",
-                            "question_id",
-                            "retrieved_evidence_count",
-                            "confidence",
-                            "answer_summary",
-                        ]
-                    ]
-                ),
+                add_readable_columns(answer_df[available_cols]),
                 use_container_width=True,
                 hide_index=True,
             )
@@ -592,7 +591,11 @@ with tab3:
             else:
                 st.info("This row was generated before prompt capture was added, so no saved prompt is available yet.")
             st.markdown("**Automated answer**")
+            # show full automated answer (with inline evidence refs per prompt)
+            st.markdown("**Automated answer (full)**")
             st.write(str(row.get("answer_summary", "")))
+            st.markdown("**Confidence explanation**")
+            st.write(str(row.get("confidence_explanation", "")) or "None")
             st.markdown("**Evidence refs**")
             st.write(str(row.get("evidence_refs", "")) or "None")
             st.markdown("**Manual units cited**")
@@ -649,13 +652,17 @@ with tab4:
     if evidence_view.empty:
         st.info("No evidence rows are available for the current filters.")
     else:
-        mode_options = ["All modes"] + sorted(x for x in evidence_view["analysis_mode"].astype(str).unique() if x)
+        # Coerce to strings and deduplicate before sorting to avoid mixed-type comparison errors
+        mode_vals = [str(x) for x in evidence_view["analysis_mode"].fillna("").tolist() if str(x).strip()]
+        mode_options = ["All modes"] + sorted(set(mode_vals), key=str)
         selected_mode = st.selectbox(
             "Analysis mode",
             mode_options,
             format_func=lambda x: "All modes" if x == "All modes" else human_label(x, ANALYSIS_MODE_LABELS),
         )
-        question_options = ["All questions"] + sorted(x for x in evidence_view["question_id"].astype(str).unique() if x)
+        # Coerce question ids to strings and deduplicate; sorting by string representation is safe
+        question_vals = [str(x) for x in evidence_view["question_id"].fillna("").tolist() if str(x).strip()]
+        question_options = ["All questions"] + sorted(set(question_vals), key=str)
         selected_question = st.selectbox(
             "Question filter",
             question_options,
