@@ -56,18 +56,18 @@ Defined in [config.py](/Users/rheachatterjee/Documents/Playground/rag-audio-anal
   - `data/derived/cycle_analysis/`
 
 ### Cycle-analysis CLI defaults
-Loaded from [settings.ini](/Users/rheachatterjee/Documents/Playground/rag-audio-analysis/settings.ini) through [run_cycle_analysis.py](/Users/rheachatterjee/Documents/Playground/rag-audio-analysis/scripts/run_cycle_analysis.py).
+Loaded from `settings.ini` through `run_cycle_analysis.py`.
 
 - `cycles`
-  - default: `1 2 3 4 5`
+  - default: `1,2,3,4,5`
 - `fidelity_topk`
-  - default: `12`
+  - default: `12` (used as explicit fallback when dynamic top-k is disabled)
 - `question_topk`
   - default: `8`
 - `fidelity_weight_doc`
-  - default: `0.5`
+  - default: `1.0` (session-fidelity currently prefers document weight only)
 - `fidelity_weight_topic`
-  - default: `0.5`
+  - default: `0.0`
 - `question_weight_doc`
   - default: `1.0`
 - `question_weight_topic`
@@ -75,7 +75,7 @@ Loaded from [settings.ini](/Users/rheachatterjee/Documents/Playground/rag-audio-
 - `context_window`
   - default: `2`
 - `ollama_model`
-  - default: empty string
+  - default: empty string (set to `gpt-oss:120b` to enable generation-backed adjudication)
 - `ollama_ssh_host`
   - default: `rc2526@10.168.224.148`
 - `ollama_ssh_key`

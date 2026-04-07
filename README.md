@@ -145,37 +145,52 @@ The cycle-analysis pipeline uses two retrieval modes:
 
 ### Weighted retrieval defaults
 
-Current recommended defaults:
+Current active defaults (driven by `settings.ini` under `[cycle_analysis]` and `[chat]`):
 
-- **Fidelity retrieval**
-  - `weight_doc = 0.5`
-  - `weight_topic = 0.5`
+- Fidelity retrieval (per-cycle/session-topic runs)
+  - `fidelity_weight_doc = 1.0`
+  - `fidelity_weight_topic = 0.0`
+  - `fidelity_topk = 12` (how many retrieved windows to consider)
 
-- **PI-question / exploratory retrieval**
-  - `weight_doc = 1.0`
-  - `weight_topic = 0.0`
+- PI-question / exploratory retrieval (question-driven runs)
+  - `question_weight_doc = 1.0`
+  - `question_weight_topic = 0.0`
+  - `question_topk = 8`
 
-These values are configurable in `settings.ini`.
+These live in `settings.ini` and can be tuned per-run or per-environment.
 
 ## Settings
 
-The active pipeline reads from:
-- `settings.ini`
+The active pipeline reads from `settings.ini`. Most runtime defaults for retrieval, adjudication, and UI behavior are configured there. Below are the most commonly tuned keys (section/key and current default):
 
-This file currently controls things like:
-- source paths
-- transcript glob
-- retrieval `topk`
-- retrieval weights
-- context window
-- topic and manual-unit similarity thresholds
-- fidelity score weights / cutoffs
-- PI-question templates
-- Ollama SSH settings
-- UI labels and defaults
+Configurable settings (examples)
 
-See also:
-- `CONFIGURABLE_VALUES.md`
+- [cycle_analysis]
+  - `fidelity_topk = 12` (int) — number of windows to retrieve for fidelity adjudication
+  - `question_topk = 8` (int) — number of windows to retrieve for PI questions
+  - `fidelity_weight_doc = 1.0` (float) — document weight when building retrieval scores for fidelity runs
+  - `fidelity_weight_topic = 0.0` (float) — topic weight when building retrieval scores for fidelity runs
+  - `question_weight_doc = 1.0` (float) — document weight for PI-question retrieval
+  - `question_weight_topic = 0.0` (float)
+
+- [fidelity]
+  - `manual_coverage_weight = 0.6` (float) — weight given to matched manual units in `adherence_score`
+  - `subsection_coverage_weight = 0.4` (float)
+  - `adherence_high_cutoff = 0.66` (float)
+  - `adherence_moderate_cutoff = 0.33` (float)
+
+- [prompting]
+  - `manual_units_in_prompt = 6` (int) — how many manual-unit excerpts to include in the model prompt
+  - `manual_excerpt_chars`, `evidence_excerpt_chars`, `display_excerpt_chars`, `ui_excerpt_chars` — truncation lengths used when composing prompts and UI snippets
+
+- [ollama]
+  - `default_model = gpt-oss:120b` — model used for optional generation-backed adjudication
+  - `ssh_host`, `ssh_key`, `remote_bin` — remote runtime hooks for Ollama when using a remote host
+
+- [ui] and [chat]
+  - `streamlit_port`, `app_title`, `topk`, `weight_doc`, `weight_topic`, `include_manual`, `answer_with_model` — UI / chat defaults used by `app/streamlit_app.py`
+
+If you change these values, re-run the relevant scripts (or restart Streamlit for UI changes). See `CONFIGURABLE_VALUES.md` for a longer inventory of tunables.
 
 ## Typical Workflow
 
@@ -299,3 +314,33 @@ These outputs are intended to be evidence-constrained summaries, not independent
 - generated logs such as `app/streamlit.log` are ignored
 
 So the repo is focused on code, settings, and documentation rather than generated analysis artifacts.
+
+Where to change behavior (quick map)
+----------------------------------
+
+If you're changing runtime behavior, here is a quick map of common changes and the files to edit.
+
+- Retrieval, manual-unit parsing, and matching heuristics
+  - Edit: `rag_audio_analysis/source_bridge.py`
+  - Also check: `settings.ini` (`transcript_export`, `topic_matching`, `manual_parsing`) for tunable thresholds.
+
+- High-level orchestration, output schema, and run flags
+  - Edit: `scripts/run_cycle_analysis.py`
+  - Also check: `settings.ini` (`cycle_analysis`) and the CLI flags (for example `--fidelity-topk`, `--fixed-fidelity-topk`).
+
+- Fidelity scoring and labels
+  - Edit: `scripts/run_cycle_analysis.py` (`summarize_fidelity(...)`) for the implementation; change weights/cutoffs in `settings.ini` under `[fidelity]`.
+
+- PI prompt templates and model-backed fields
+  - Edit: `scripts/run_cycle_analysis.py` for how prompts are composed and parsed; change prompt content in `settings.ini` under `[pi_questions]`.
+
+- Streamlit UI labels, column display, and interactive defaults
+  - Edit: `app/streamlit_app.py`; many UI defaults are read from `settings.ini` under `[ui]` and `[chat]`.
+
+- Aggregation and summary table generation
+  - Edit: `scripts/aggregate_cycle_outputs.py` (controls how per-cycle CSVs are combined into `summary/` tables).
+
+- Small analyses and notebook-driven visuals
+  - Edit: `analysis/*.ipynb` and scripts under `scripts/` (for reproducible, headless runs use the `.venv` and `nbconvert`).
+
+This map is intentionally short; see `CONFIGURABLE_VALUES.md` and `DATA_AGGREGATION.md` for a longer inventory and provenance notes.

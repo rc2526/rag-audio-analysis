@@ -142,6 +142,33 @@ Important design constraint:
 - future rerun support should assume session-level fidelity only
 - topic-level fidelity should not be part of the intended long-term rerun architecture
 
+Where to change behavior (quick map)
+----------------------------------
+
+If you need to change behavior, these are the most common edit targets:
+
+- Retrieval, manual-unit parsing, and matching heuristics:
+  - `rag_audio_analysis/source_bridge.py`
+  - Tunables: `settings.ini` (sections: `transcript_export`, `topic_matching`, `manual_parsing`)
+
+- High-level orchestration, CSV schema, and run flags:
+  - `scripts/run_cycle_analysis.py`
+  - Tunables: `settings.ini` (`cycle_analysis`) and CLI flags like `--fidelity-topk`, `--fixed-fidelity-topk`.
+
+- Fidelity scoring implementation and where labels are set:
+  - `scripts/run_cycle_analysis.py` (`summarize_fidelity(...)`); change cutoffs in `[fidelity]` of `settings.ini`.
+
+- PI prompt wording and model parsing logic:
+  - `scripts/run_cycle_analysis.py` and helper prompt builders; `settings.ini` (`pi_questions`, `prompting`) controls template bits.
+
+- Streamlit UI layout, column labels, and interactive defaults:
+  - `app/streamlit_app.py`; many display defaults are pulled from `settings.ini` (`ui`, `chat`).
+
+- Aggregation and summary table layout:
+  - `scripts/aggregate_cycle_outputs.py`
+
+If you'd like, I can add a one-paragraph explanation to any of the files above that points to the exact function or lines to edit next time.
+
 Implementation status update:
 
 - `scripts/run_cycle_analysis.py` now supports targeted reruns with:
@@ -151,9 +178,39 @@ Implementation status update:
   - `--question-id`
   - merge-safe partial rewrites by default
   - `--overwrite` when a full replacement is intended
-- fidelity now uses dynamic top-k by default:
-  - `topk = expected_manual_unit_count`
-  - use `--fixed-fidelity-topk` only if the older fixed-value behavior is intentionally needed
+
+- Fidelity top-k behavior (clarified)
+
+  By default the fidelity pipeline uses a dynamic top-k sized to the number of expected manual units for the session-topic. The resolver logic is:
+
+  - if dynamic mode is enabled (the default) and there are manual units for the session, top-k = max(len(manual_units), 1)
+  - otherwise top-k = the explicit `--fidelity-topk` value (or the `fidelity_topk` value from `settings.ini`)
+
+  Flags and defaults:
+
+  - `--fidelity-topk` (int) sets the explicit fallback top-k; default comes from `[cycle_analysis] fidelity_topk` in `settings.ini` (currently 12).
+  - `--fixed-fidelity-topk` disables dynamic behavior (it sets `dynamic_fidelity_topk = False`) so the pipeline will use the explicit `--fidelity-topk` value for every session-topic.
+  - dynamic behavior is the recommended default because it sizes retrieval to the session's expected manual-unit count.
+
+  Examples:
+
+  - Run with default dynamic top-k (sizes to expected manual units):
+
+    ```bash
+    .venv/bin/python scripts/run_cycle_analysis.py --cycles 1 2 3
+    ```
+
+  - Force a fixed top-k of 12 for all session-topic queries:
+
+    ```bash
+    .venv/bin/python scripts/run_cycle_analysis.py --fixed-fidelity-topk --fidelity-topk 12 --cycles 1
+    ```
+
+  - Use the `fidelity_topk` from `settings.ini` but force fixed behavior:
+
+    ```bash
+    .venv/bin/python scripts/run_cycle_analysis.py --fixed-fidelity-topk --cycles 1
+    ```
 
 ## Retrieval Weighting Defaults
 
