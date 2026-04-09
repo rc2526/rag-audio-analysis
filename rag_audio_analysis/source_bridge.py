@@ -5,6 +5,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any, Optional
 import numpy as np
+import pandas as pd
 
 from rag_audio_analysis.config import (
     CYCLE_ANALYSIS_DIR,
@@ -208,6 +209,46 @@ def encode_texts(texts: list[str]) -> np.ndarray:
     model = get_embedding_model()
     matrix = model.encode(texts, convert_to_numpy=True).astype(np.float32)
     return normalize_rows(matrix)
+
+
+def normalize_cycle_frame(df: pd.DataFrame) -> pd.DataFrame:
+    """Normalize cycle-level DataFrame schemas for downstream consumers.
+
+    Ensures common columns exist and renames obvious synonyms so the UI can
+    safely select/intersect columns without KeyError. This is idempotent.
+
+    Rules applied:
+    - rename 'manual_session_num' -> 'session_num' when present
+    - rename 'source_topic_id' -> 'topic_id' and 'source_topic_label' -> 'topic_label'
+    - ensure the presence of canonical columns: session_num, question_id, topic_id, topic_label
+      by adding them with empty-string values if missing
+    - coerce dtype to string for those canonical columns
+    """
+    if df is None or df.empty:
+        return df if df is not None else pd.DataFrame()
+    view = df.copy()
+
+    # rename common synonyms
+    if "manual_session_num" in view.columns and "session_num" not in view.columns:
+        view = view.rename(columns={"manual_session_num": "session_num"})
+    if "source_topic_id" in view.columns and "topic_id" not in view.columns:
+        view = view.rename(columns={"source_topic_id": "topic_id"})
+    if "source_topic_label" in view.columns and "topic_label" not in view.columns:
+        view = view.rename(columns={"source_topic_label": "topic_label"})
+
+    # ensure canonical columns exist
+    for c in ["session_num", "question_id", "topic_id", "topic_label"]:
+        if c not in view.columns:
+            view[c] = ""
+
+    # coerce to string to avoid mixed-type comparison issues later
+    for c in ["session_num", "question_id", "topic_id", "topic_label"]:
+        try:
+            view[c] = view[c].astype(str)
+        except Exception:
+            view[c] = view[c].apply(lambda x: "" if pd.isna(x) else str(x))
+
+    return view
 
 
 def load_topic_entries() -> list[dict[str, str]]:

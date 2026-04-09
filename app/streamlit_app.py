@@ -13,6 +13,7 @@ if str(ROOT) not in sys.path:
 
 from rag_audio_analysis.chat_runner import run_chat_query
 from rag_audio_analysis.config import CYCLE_ANALYSIS_DIR, MANUAL_UNITS_CSV, TOPIC_CATALOG_CSV
+from rag_audio_analysis.source_bridge import normalize_cycle_frame
 from rag_audio_analysis.settings import get_float, get_int, get_str
 
 
@@ -60,7 +61,14 @@ ADJUDICATION_LABELS = {
 def load_csv(path: Path) -> pd.DataFrame:
     if not path.exists():
         return pd.DataFrame()
+    # Avoid Streamlit caching here so external updates to CSVs appear when the
+    # app reruns. keep_default_na=False preserves empty strings instead of NaN.
     return pd.read_csv(path, keep_default_na=False)
+
+
+def reload_flag_set() -> bool:
+    # Toggle-able flag stored in session_state to force callers to re-read data.
+    return bool(st.session_state.get("reload_data", False))
 
 
 def get_excerpt(text: str, limit: int = 280) -> str:
@@ -201,18 +209,39 @@ def render_key() -> None:
         st.write("These are the evidence windows pulled from transcripts for cycle-level fidelity or PI-question mode.")
 
 
+# Provide a simple mechanism to force full reloads when the user clicks the
+# sidebar "Reload data from disk" button. We don't use @st.cache here to keep
+# behavior explicit and simple.
+if st.session_state.get("reload_data"):
+    # Clear the flag after checking so subsequent interactions don't force a
+    # reload unless the button is pressed again.
+    st.session_state["reload_data"] = False
+
 manual_units = load_csv(MANUAL_UNITS_CSV)
 topic_catalog = load_csv(TOPIC_CATALOG_CSV)
 cycle_ids = list_cycle_ids()
 
-all_fidelity = load_all_cycle_files("fidelity_summary.csv")
-all_session_fidelity = load_all_cycle_files("session_fidelity_summary.csv")
-all_pi_answers = load_all_cycle_files("pi_question_answers.csv")
-all_evidence = load_all_cycle_files("topic_evidence.csv")
-all_session_evidence = load_all_cycle_files("session_fidelity_evidence.csv")
+all_fidelity = normalize_cycle_frame(load_all_cycle_files("fidelity_summary.csv"))
+all_session_fidelity = normalize_cycle_frame(load_all_cycle_files("session_fidelity_summary.csv"))
+all_pi_answers = normalize_cycle_frame(load_all_cycle_files("pi_question_answers.csv"))
+all_evidence = normalize_cycle_frame(load_all_cycle_files("topic_evidence.csv"))
+all_session_evidence = normalize_cycle_frame(load_all_cycle_files("session_fidelity_evidence.csv"))
 
 with st.sidebar:
     st.header("Filters")
+    # Reload data from disk: external CSV/JSON updates won't automatically appear
+    # in the UI unless the app reruns. This button forces a rerun so files are
+    # re-read and the UI shows the latest rows.
+    if st.button("Reload data from disk"):
+        st.session_state["reload_data"] = True
+        # Some Streamlit versions may not expose experimental_rerun; guard use
+        if hasattr(st, "experimental_rerun"):
+            st.experimental_rerun()
+        else:
+            # As a safe fallback, stop execution; the UI will not crash and the
+            # reload flag will be processed on the next user interaction.
+            st.success("Reload scheduled; please interact with the UI to complete refresh.")
+            st.stop()
     cycle_options = ["All cycles"] + cycle_ids
     selected_cycle = st.selectbox("Cycle", cycle_options, index=1 if len(cycle_options) > 1 else 0)
 
@@ -243,6 +272,7 @@ def apply_common_filters(df: pd.DataFrame, include_topic: bool = True) -> pd.Dat
     if selected_cycle != "All cycles" and "cycle_id" in view.columns:
         view = view[view["cycle_id"].astype(str) == selected_cycle]
     if selected_session != "All sessions":
+        # support both session_num and manual_session_num column names
         if "session_num" in view.columns:
             view = view[view["session_num"].astype(str) == selected_session]
         elif "manual_session_num" in view.columns:
@@ -343,38 +373,54 @@ with tab2:
     else:
         fidelity_df = session_fidelity_view.copy()
         fidelity_df["adherence_score"] = pd.to_numeric(fidelity_df["adherence_score"], errors="coerce").fillna(0)
+        cols = [
+            c
+            for c in [
+                "cycle_id",
+                "manual_session_num",
+                "manual_session_label",
+                "session_num",
+                "retrieved_evidence_count",
+                "expected_manual_unit_count",
+                "matched_manual_unit_count",
+                "manual_unit_coverage",
+                "expected_subsection_count",
+                "matched_subsection_count",
+                "subsection_coverage",
+                "evidence_density",
+                "adherence_score",
+                "adherence_label",
+                "adjudication_label",
+                "adjudication_confidence",
+                "adjudication_summary",
+                "topk_mode",
+            ]
+            if c in fidelity_df.columns
+        ]
+        sort_cols = [c for c in ["cycle_id", "manual_session_num", "session_num"] if c in fidelity_df.columns]
+        if sort_cols:
+            display_df = fidelity_df[cols].sort_values(sort_cols)
+        else:
+            display_df = fidelity_df[cols]
+
         st.dataframe(
-            add_readable_columns(
-                fidelity_df[
-                    [
-                        "cycle_id",
-                        "manual_session_num",
-                        "manual_session_label",
-                        "retrieved_evidence_count",
-                        "expected_manual_unit_count",
-                        "matched_manual_unit_count",
-                        "manual_unit_coverage",
-                        "expected_subsection_count",
-                        "matched_subsection_count",
-                        "subsection_coverage",
-                        "evidence_density",
-                        "adherence_score",
-                        "adherence_label",
-                        "adjudication_label",
-                        "adjudication_confidence",
-                        "adjudication_summary",
-                    ]
-                ].sort_values(["cycle_id", "manual_session_num"])
-            ),
+            add_readable_columns(display_df),
             use_container_width=True,
             hide_index=True,
         )
 
         row_options = fidelity_df.index.tolist()
+        # Choose the best session column name available for display
+        session_col_display = "manual_session_num" if "manual_session_num" in fidelity_df.columns else ("session_num" if "session_num" in fidelity_df.columns else None)
+        def _format_fidelity_row(idx):
+            cycle = fidelity_df.at[idx, 'cycle_id'] if 'cycle_id' in fidelity_df.columns else ''
+            sess = fidelity_df.at[idx, session_col_display] if session_col_display else ''
+            return f"{cycle} | Session {sess}"
+
         selected_row_idx = st.selectbox(
             "Select a cycle/manual-session row for detail",
             row_options,
-            format_func=lambda idx: f"{fidelity_df.at[idx, 'cycle_id']} | Session {fidelity_df.at[idx, 'manual_session_num']}",
+            format_func=_format_fidelity_row,
         )
         row = fidelity_df.loc[selected_row_idx]
 
@@ -419,8 +465,10 @@ with tab2:
 
         matched_ids = [x for x in str(row.get("matched_manual_unit_ids", "")).split(";") if x]
         expected_units = manual_units.copy()
-        if "manual_week" in expected_units.columns:
-            expected_units = expected_units[expected_units["manual_week"].astype(str) == str(row.get("manual_session_num", ""))]
+        # Determine session value from the selected row, supporting both manual_session_num and session_num
+        row_session_val = str(row.get("manual_session_num", "") or row.get("session_num", ""))
+        if "manual_week" in expected_units.columns and row_session_val:
+            expected_units = expected_units[expected_units["manual_week"].astype(str) == row_session_val]
         else:
             expected_units = expected_units.iloc[0:0]
 
@@ -465,11 +513,14 @@ with tab2:
 
         supporting_evidence = session_evidence_view.copy()
         if not supporting_evidence.empty:
-            supporting_evidence = supporting_evidence[
-                (supporting_evidence["analysis_mode"].astype(str) == "session_fidelity")
-                & (supporting_evidence["cycle_id"].astype(str) == str(row.get("cycle_id", "")))
-                & (supporting_evidence["manual_session_num"].astype(str) == str(row.get("manual_session_num", "")))
-            ]
+            # choose the correct session column present in supporting_evidence
+            session_key = "manual_session_num" if "manual_session_num" in supporting_evidence.columns else ("session_num" if "session_num" in supporting_evidence.columns else None)
+            row_session_val = str(row.get("manual_session_num", "") or row.get("session_num", ""))
+            # base filter by analysis_mode and cycle_id
+            mask = (supporting_evidence["analysis_mode"].astype(str) == "session_fidelity") & (supporting_evidence["cycle_id"].astype(str) == str(row.get("cycle_id", "")))
+            if session_key and row_session_val:
+                mask = mask & (supporting_evidence[session_key].astype(str) == row_session_val)
+            supporting_evidence = supporting_evidence[mask]
         if supporting_evidence.empty:
             st.info("No supporting fidelity evidence rows were found for this cycle/manual-session pair.")
         else:
@@ -558,10 +609,17 @@ with tab3:
             )
 
             row_options = answer_df.index.tolist()
+            def _format_answer_row(idx):
+                cycle = answer_df.at[idx, 'cycle_id'] if 'cycle_id' in answer_df.columns else ''
+                sess = answer_df.at[idx, 'session_num'] if 'session_num' in answer_df.columns else ''
+                q = human_label(answer_df.at[idx, 'question_id'], QUESTION_LABELS) if 'question_id' in answer_df.columns else ''
+                topic = answer_df.at[idx, 'topic_label'] if 'topic_label' in answer_df.columns else ''
+                return f"{cycle} | Session {sess} | {q} | {topic}"
+
             selected_answer_idx = st.selectbox(
                 "Select an answer row for detail",
                 row_options,
-                format_func=lambda idx: f"{answer_df.at[idx, 'cycle_id']} | Session {answer_df.at[idx, 'session_num']} | {human_label(answer_df.at[idx, 'question_id'], QUESTION_LABELS)} | {answer_df.at[idx, 'topic_label']}",
+                format_func=_format_answer_row,
             )
             row = answer_df.loc[selected_answer_idx]
 
@@ -653,16 +711,24 @@ with tab4:
         st.info("No evidence rows are available for the current filters.")
     else:
         # Coerce to strings and deduplicate before sorting to avoid mixed-type comparison errors
-        mode_vals = [str(x) for x in evidence_view["analysis_mode"].fillna("").tolist() if str(x).strip()]
-        mode_options = ["All modes"] + sorted(set(mode_vals), key=str)
+        # Guard access in case some cycle outputs omit the analysis_mode column.
+        if "analysis_mode" in evidence_view.columns:
+            mode_vals = [str(x) for x in evidence_view["analysis_mode"].fillna("").tolist() if str(x).strip()]
+            mode_options = ["All modes"] + sorted(set(mode_vals), key=str)
+        else:
+            mode_options = ["All modes"]
         selected_mode = st.selectbox(
             "Analysis mode",
             mode_options,
             format_func=lambda x: "All modes" if x == "All modes" else human_label(x, ANALYSIS_MODE_LABELS),
         )
         # Coerce question ids to strings and deduplicate; sorting by string representation is safe
-        question_vals = [str(x) for x in evidence_view["question_id"].fillna("").tolist() if str(x).strip()]
-        question_options = ["All questions"] + sorted(set(question_vals), key=str)
+        if "question_id" in evidence_view.columns:
+            question_vals = [str(x) for x in evidence_view["question_id"].fillna("").tolist() if str(x).strip()]
+            question_options = ["All questions"] + sorted(set(question_vals), key=str)
+        else:
+            question_options = ["All questions"]
+
         selected_question = st.selectbox(
             "Question filter",
             question_options,
@@ -671,42 +737,65 @@ with tab4:
         )
 
         browser_df = evidence_view.copy()
-        if selected_mode != "All modes":
+        # Only filter by mode if the column exists
+        if selected_mode != "All modes" and "analysis_mode" in browser_df.columns:
             browser_df = browser_df[browser_df["analysis_mode"].astype(str) == selected_mode]
-        if selected_question != "All questions":
+        if selected_question != "All questions" and "question_id" in browser_df.columns:
             browser_df = browser_df[browser_df["question_id"].astype(str) == selected_question]
 
         if browser_df.empty:
             st.info("No evidence rows match the current filters.")
         else:
             display_df = browser_df.copy()
-            display_df["excerpt"] = display_df["excerpt"].astype(str).apply(get_excerpt)
+            # Safely prepare excerpt only if present
+            if "excerpt" in display_df.columns:
+                display_df["excerpt"] = display_df["excerpt"].astype(str).apply(get_excerpt)
+
+            # Only select columns that exist to avoid KeyError when some fields are missing
+            desired_cols = [
+                "cycle_id",
+                "session_num",
+                "manual_session_num",
+                "topic_id",
+                "topic_label",
+                "analysis_mode",
+                "question_id",
+                "retrieval_rank",
+                "manual_unit_id_best_match",
+                "manual_unit_match_score",
+                "excerpt",
+            ]
+            cols_to_show = [c for c in desired_cols if c in display_df.columns]
+
+            # If producers used `manual_session_num` instead of `session_num`, expose it under the
+            # canonical `session_num` column for consistent display and readable-column mapping.
+            if "session_num" not in cols_to_show and "manual_session_num" in cols_to_show:
+                display_df = display_df.copy()
+                display_df["session_num"] = display_df["manual_session_num"].astype(str)
+                cols_to_show = ["session_num" if c == "manual_session_num" else c for c in cols_to_show]
+
+            missing = [c for c in desired_cols if c not in cols_to_show]
+            if missing:
+                st.warning(f"Some expected columns are missing and will be hidden: {missing}")
+
             st.dataframe(
-                add_readable_columns(
-                    display_df[
-                        [
-                            "cycle_id",
-                            "session_num",
-                            "topic_id",
-                            "topic_label",
-                            "analysis_mode",
-                            "question_id",
-                            "retrieval_rank",
-                            "manual_unit_id_best_match",
-                            "manual_unit_match_score",
-                            "excerpt",
-                        ]
-                    ]
-                ),
+                add_readable_columns(display_df[cols_to_show]),
                 use_container_width=True,
                 hide_index=True,
             )
 
             row_options = browser_df.index.tolist()
+            def _format_evidence_row(idx):
+                cycle = browser_df.at[idx, 'cycle_id'] if 'cycle_id' in browser_df.columns else ''
+                sess = browser_df.at[idx, 'session_num'] if 'session_num' in browser_df.columns else (browser_df.at[idx, 'manual_session_num'] if 'manual_session_num' in browser_df.columns else '')
+                rank = browser_df.at[idx, 'retrieval_rank'] if 'retrieval_rank' in browser_df.columns else ''
+                topic = browser_df.at[idx, 'topic_label'] if 'topic_label' in browser_df.columns else ''
+                return f"{cycle} | Session {sess} | rank {rank} | {topic}"
+
             selected_evidence_idx = st.selectbox(
                 "Select an evidence row for detail",
                 row_options,
-                format_func=lambda idx: f"{browser_df.at[idx, 'cycle_id']} | Session {browser_df.at[idx, 'session_num']} | rank {browser_df.at[idx, 'retrieval_rank']} | {browser_df.at[idx, 'topic_label']}",
+                format_func=_format_evidence_row,
             )
             row = browser_df.loc[selected_evidence_idx]
             e1, e2, e3 = st.columns(3)

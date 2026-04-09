@@ -340,6 +340,56 @@ Sync status:
 - the same patch was copied to the Yale-hosted repo at:
   - `/Users/rhea.chatterjeeyale.edu/rag-audio-analysis/rag_audio_analysis/source_bridge.py`
 
+## Recent session updates (summary)
+
+Actions performed during the current working session (April 6–7, 2026):
+
+- Heuristic recovery and human-in-the-loop fixes for PI rows that previously failed with
+  non-JSON model responses: a multi-pass pipeline (embedded-JSON extraction, tolerant
+  parsing, short-answer refinement) produced a review artifact; proposed fixes were
+  reviewed and applied to per-cycle CSV/JSON outputs with timestamped backups (22 rows
+  updated across cycle outputs in the recent run).
+
+- Rerun tooling: a small rerun helper script was added/validated which accepts a
+  review JSON describing rows to rerun and will call the configured model using the
+  stored `prompt_text`, parse the response, and update only the targeted CSV/JSON rows
+  while creating backups. The script supports `--dry-run` for safety.
+
+- PI-confidence analytics: two new analysis notebooks were created to aggregate and
+  visualize PI confidence buckets and write review artifacts to the summary folder:
+  - `analysis/pi_confidence_by_question.ipynb` — produces
+    `data/derived/cycle_analysis/summary/pi_confidence_by_question_counts.csv` and
+    `pi_confidence_by_question_counts.png` (single stacked horizontal bar chart by
+    question, ordered by absolute high counts).
+  - `analysis/pi_confidence_by_topic.ipynb` — produces
+    `data/derived/cycle_analysis/summary/pi_confidence_by_topic_counts.csv` and
+    `pi_confidence_by_topic_counts.png` (single stacked horizontal bar chart by topic,
+    ordered so topics with the largest absolute `high` counts appear on top).
+
+- Plotting and legibility tweaks: the topic plotting code was iteratively adjusted to
+  (a) sort by absolute `high` counts, (b) enforce consistent bucket ordering
+  (`high|medium|low`), (c) invert the y-axis so highest-high appears at the top, and
+  (d) increase figure size, left margin, and DPI; an SVG export option is available if
+  vector-quality labels are preferable for publication.
+
+- Safety and operational notes: all automated writes create backups; the recommended
+  sequence for a targeted rerun remains: run the rerun script with `--dry-run`, then
+  rerun without `--dry-run` to apply changes, and finally run
+  `scripts/aggregate_cycle_outputs.py` and restart Streamlit if the app should reflect
+  the updates.
+
+Next recommended steps (options):
+
+- If you want me to re-run two specific PI rows you mentioned (PMH Cycle 1, Session 1
+  and PMH Cycle 4, Session 7), provide the model name to use (for example
+  `gpt-oss:120b`) and I'll: create a two-row review JSON, run the rerun script in
+  `--dry-run` mode to show expected changes, then run it to apply updates if you
+  confirm.
+
+- If topic label legibility is still insufficient in the PNGs, I can re-run the topic
+  notebook to export a high-resolution SVG and a larger PNG, or convert the plot to an
+  interactive HTML (Plotly) so full topic names are accessible via hover tooltips.
+
 ## Ollama Confirmation During Cycle Runs
 
 Confirmed during the Yale `PMHCycle1` rerun:

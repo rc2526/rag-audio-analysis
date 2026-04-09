@@ -159,6 +159,104 @@ Current active defaults (driven by `settings.ini` under `[cycle_analysis]` and `
 
 These live in `settings.ini` and can be tuned per-run or per-environment.
 
+### Retrieval & Embeddings — how it works (human-readable)
+
+This project uses an embedding-backed retrieval pipeline borrowed from the original
+`rag-audio` project. Below is a short, non-technical walkthrough of what happens
+when the pipeline retrieves evidence for a session, topic, or PI question.
+
+- Build a plain-text query: session queries explicitly say "Retrieve transcript
+  evidence for this exact manual session" and may include short topic labels or
+  a session summary; topic/PI queries include the topic label and a question
+  template.
+- Convert the query into a vector using an embedding model (the original
+  project's embedding model is returned by the external `build_and_query_rag.py`
+  module and used here via `_get_model(...)`).
+- The pipeline loads a prebuilt index (meta rows + a NumPy embedding matrix)
+  produced by the source `rag-audio` repo. Documents are filtered by cycle and
+  (usually) restricted to transcript turns rather than manual.txt chunks.
+- For each candidate document the pipeline computes a cosine-like similarity
+  between the query and the document embedding. Optionally, a second
+  "topic-similarity" signal is computed using precomputed topic embeddings; the
+  two signals are combined to produce a single ranking score.
+- The top-N documents by that combined score are returned; each is expanded into
+  a small transcript window (the `context_window` setting controls how many
+  surrounding turns are included) and matched against structured manual units
+  using the same kind of embedding-similarity check.
+
+Why the topic signal exists
+- Topic embeddings are short vectors for each topic label (and usually the
+  session label). When `weight_topic` is non-zero the system boosts documents
+  that are unlike the query text but strongly aligned to a topic vector. This
+  helps surface documents that use different phrasing but clearly belong to the
+  same topic.
+
+Scoring (simple explanation)
+- Document similarity and topic similarity are each computed as cosine-style
+  scores. To make them comparable the code z-scores (subtract mean, divide by
+  std) each signal and then takes a weighted sum: roughly
+  `combined = w_doc * z(sim_doc) + w_topic * z(sim_topic)`.
+- Because of z-scoring, a relatively small topic weight can still reorder the
+  top results if the topic scores have a different spread than document scores.
+
+Where the embeddings and index live
+- The pipeline points at an external `SOURCE_ROOT` (configured in
+  `settings.ini` / `config.py`) that contains a `rag_index/` with at least:
+  - `meta.json` or equivalent metadata describing each index row
+  - `embeddings.npy` (the document embedding matrix)
+  - optional topic embedding files used by the source project's helpers
+- The local bridge `rag_audio_analysis/source_bridge.py` calls into the
+  external `tools/build_and_query_rag.py` module (from the original project)
+  to load embeddings and the embedding model. If those files are missing the
+  pipeline will raise an error.
+
+Human-friendly knobs you will likely change
+- `--fidelity-topk` / `fidelity_topk` — how many windows to retrieve per
+  session/topic (default 12 for fidelity runs)
+- `--fixed-fidelity-topk` — force the fixed top-k instead of dynamically using
+  the number of manual units
+- `fidelity_weight_doc` and `fidelity_weight_topic` — control the blend between
+  document similarity and per-topic similarity (defaults favor document
+  similarity for fidelity runs)
+- `--context-window` / `context_window` — how many turns around each hit to
+  include when creating the evidence excerpt
+- `topic_min_similarity`, `manual_unit_min_similarity` — thresholds used when
+  assigning topic labels and manual-unit matches
+
+Common failure modes and what they look like
+- Missing or corrupt index files (no `embeddings.npy` or `meta.json`) → the
+  pipeline will raise an error when trying to load the index.
+- Topic-weight surprises → because the two signals are z-scored before mixing,
+  increasing `weight_topic` can produce large reordering even when raw topic
+  similarities look small.
+- Session vs topic confusion → session queries explicitly instruct "this
+  session" and the code also filters candidates by cycle/session when asked,
+  while topic queries may return hits from other sessions if the topic match
+  is strong.
+- Non-JSON model adjudication responses → adjudication prompts may sometimes
+  produce deliberative text ("Thinking...") instead of strict JSON; in that
+  case the pipeline writes the raw text into a fallback field and leaves the
+  structured adjudication cells empty.
+
+Quick local checks
+- If you want to confirm which index files exist under the configured index
+  directory, run (from this repo root):
+
+```bash
+ls -lah "$SOURCE_ROOT/rag_index"  # replace $SOURCE_ROOT with the path in settings.ini
+```
+
+- To inspect the meta file and confirm paths and cycle ids:
+
+```bash
+python -c "import json,sys; print(json.load(open('/path/to/rag_index/meta.json'))[:3])"
+```
+
+If you want me to also inspect the external `build_and_query_rag.py` module for
+exact model names and filenames I can do that, but that file lives outside the
+workspace so you'll need to either copy it into this repo or allow me to run a
+small remote inspection command; tell me which you prefer.
+
 ## Settings
 
 The active pipeline reads from `settings.ini`. Most runtime defaults for retrieval, adjudication, and UI behavior are configured there. Below are the most commonly tuned keys (section/key and current default):
