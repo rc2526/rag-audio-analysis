@@ -68,6 +68,51 @@ This repo does **not** replace `rag-audio`. It depends on it.
 - `app/streamlit_app.py`
   - Streamlit interface for browsing outputs and running chat
 
+## Pipeline source of truth (canonical)
+
+This README is the canonical source-of-truth for how the cycle-analysis pipeline works, which files are involved, and which runtime flags are available.
+
+Short summary:
+- Orchestrator: `scripts/run_cycle_analysis.py` — walks sessions/topics and produces per-cycle outputs (PI answers, topic evidence, fidelity summaries).
+- Rebuild helper: `scripts/rebuild_topic_evidence_from_pi_json.py` — reconstructs `topic_evidence.csv` from existing `pi_question_answers.json` (dry-run default; `--apply` writes files and creates `.bak`).
+- Aggregator: `scripts/aggregate_cycle_outputs.py` — creates summary tables under `data/derived/cycle_analysis/summary/`.
+
+Data layout (per-cycle): `data/derived/cycle_analysis/PMHCycle{N}/`
+- `pi_question_answers.json` / `pi_question_answers.csv`
+- `topic_evidence.csv`
+- `fidelity_summary.csv`, `session_fidelity_summary.csv`, `session_fidelity_evidence.csv`
+
+Important CLI flags (from `scripts/run_cycle_analysis.py`)
+- `--cycles` (list) — cycle ids/numbers to run (default from settings)
+- `--fidelity-topk` (int) — top-k for fidelity retrieval (default from settings)
+- `--question-topk` (int) — top-k for PI question retrieval
+- `--fidelity-weight-doc` / `--fidelity-weight-topic` (float) — retrieval weighting for fidelity
+- `--question-weight-doc` / `--question-weight-topic` (float) — retrieval weighting for PI questions
+- `--context-window` (int) — number of transcript turns included around a hit
+- `--ollama-model` (str) — model for PI-question summaries (empty disables model calls)
+- `--fidelity-ollama-model` (str) — model for fidelity adjudication prompts
+- `--ollama-ssh-host`, `--ollama-ssh-key`, `--ollama-remote-bin` — remote Ollama execution options
+- `--limit-topics` (int) — debug limiter for number of topics processed
+- `--mode` — `all` | `fidelity` | `pi` (default `all`)
+- `--session-num`, `--topic-id`, `--question-id` — targeted rerun filters
+- `--overwrite` (flag) — overwrite outputs instead of merging targeted reruns
+- `--fixed-fidelity-topk` / `--dynamic_fidelity_topk` — switch between fixed and dynamic fidelity topk
+- `--enable-topic-fidelity` (flag) — run topic-level fidelity in addition to session-level
+
+Behavioral notes and safety
+- Targeted runs (filters supplied) merge into existing CSVs by default; use `--overwrite` to replace.
+- Topic evidence dedupe key includes `question_id` so PI windows for different questions are not collapsed. Recent changes preserved `analysis_mode="fidelity"` rows during merges so authoritative fidelity rows are not removed by PI rebuilds.
+- `scripts/rebuild_topic_evidence_from_pi_json.py` defaults to a dry-run; `--apply` creates `.bak` backups before writing.
+
+Operational examples
+```
+python3 scripts/run_cycle_analysis.py --mode all
+python3 scripts/run_cycle_analysis.py --cycles 1 --mode pi --limit-topics 1
+python3 scripts/rebuild_topic_evidence_from_pi_json.py --cycles 2 3 --apply
+python3 scripts/aggregate_cycle_outputs.py
+```
+
+
 ## Derived Outputs
 
 The bootstrap and analysis scripts write to `data/derived/`.
@@ -94,6 +139,38 @@ Those per-cycle folders contain files such as:
 
 Aggregated publication-oriented summary tables are written under:
 - `data/derived/cycle_analysis/summary/`
+
+The `scripts/aggregate_cycle_outputs.py` script reads per-cycle CSVs and writes the following files into the `summary/` folder (exact column lists vary slightly by run/version but key columns are listed):
+
+- `table_session_topic_fidelity.csv` — concatenated `fidelity_summary.csv` from each cycle. Key columns: `cycle_id`, `session_num`, `topic_id`, `topic_label`, `adherence_score`, `adherence_label`, `manual_unit_coverage`, `subsection_coverage`, `retrieved_evidence_count`, `matched_manual_unit_ids`, adjudication fields (prompt/raw response), `topk_mode`, `topk_value`.
+- `table_cycle_manual_session_fidelity.csv` — concatenated `session_fidelity_summary.csv`. Key columns: `cycle_id`, `manual_session_num`, `adherence_score`, `adherence_label`, `evidence_density`, `retrieved_evidence_count`, adjudication fields, `topk_mode`, `topk_value`.
+- `table_pi_question_answers.csv` — concatenated `pi_question_answers.csv`. Key columns: `cycle_id`, `session_num`, `topic_id`, `question_id`, `question_label`, `retrieved_evidence_count`, `answer_summary`, `confidence`, `evidence_refs`, `manual_unit_ids`, `raw_response`.
+- `table_topic_evidence.csv` — concatenated `topic_evidence.csv`. Key columns: `cycle_id`, `session_num`, `topic_id`, `analysis_mode` (e.g. `pi_question`, `fidelity`, `session_fidelity`), `question_id`, `retrieval_rank`, `session_id`, `text`, `excerpt`, `score_combined`, `manual_unit_id_best_match`.
+- `table_cycle_manual_session_evidence.csv` — concatenated `session_fidelity_evidence.csv`. Key columns: `cycle_id`, `manual_session_num`, `analysis_mode` (`session_fidelity`), `retrieval_rank`, `session_id`, `text`, `excerpt`, `score_combined`, `manual_unit_id_best_match`.
+
+Aggregated summary metrics produced by the script (also written to `summary/`):
+
+- `summary_fidelity_by_cycle.csv` — per-cycle aggregates of fidelity (mean/median adherence score, mean coverage, % high/moderate/low labels).
+- `summary_fidelity_by_topic.csv` — per-topic fidelity aggregates across cycles.
+- `summary_session_fidelity_by_cycle.csv` — per-cycle session-level fidelity aggregates.
+- `summary_session_fidelity_by_manual_session.csv` — aggregates grouped by manual session number/label.
+- `summary_pi_questions_by_cycle.csv` — per-cycle PI question aggregates (mean evidence count, % rows with answers, confidence distribution).
+- `summary_pi_questions_by_type.csv` — aggregates grouped by PI question type `question_id`/`question_label`.
+- `summary_pi_questions_by_cycle_and_type.csv` — grouped by `(cycle_id, question_id)`.
+- `summary_evidence_by_cycle.csv` — per-cycle evidence statistics (number of evidence rows, mean scores).
+
+Additional adjudication summary outputs
+--
+The aggregator now writes session-level adjudication rollups in addition to topic/session-topic rollups. These files are useful when topic-level fidelity rows are absent for some cycles but session-level adjudication was performed.
+
+- `summary_adjudication_by_cycle_session.csv` — percent breakdown of `adjudication_label` (high/moderate/low) computed from `session_fidelity_summary.csv` grouped by `cycle_id`.
+- `summary_adjudication_confidence_by_cycle_session.csv` — percent breakdown of `adjudication_confidence` (high/medium/low) computed from `session_fidelity_summary.csv` grouped by `cycle_id`.
+
+Behavior note: the aggregator reads available per-cycle CSVs and skips missing files. If a cycle lacks `fidelity_summary.csv` (topic-level rows) but has `session_fidelity_summary.csv`, the session-level adjudication files will still include that cycle. 
+
+Notes:
+- Missing per-cycle files are skipped; the script tolerates partial inputs and produces empty or partial summary tables accordingly.
+- Re-run `scripts/aggregate_cycle_outputs.py` after any per-cycle edits or rebuilds to refresh these summaries.
 
 ## Manual Units
 

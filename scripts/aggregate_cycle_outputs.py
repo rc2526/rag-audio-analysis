@@ -216,6 +216,48 @@ def build_pi_by_question(pi_df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows).sort_values("question_id")
 
 
+def build_pi_by_topic(pi_df: pd.DataFrame) -> pd.DataFrame:
+    """Aggregate PI answers by topic (topic_id, topic_label).
+
+    Produces per-topic counts, mean retrieved evidence, percent rows with answers,
+    percent rows with evidence references, and confidence breakdown when available.
+    """
+    if pi_df.empty:
+        return pd.DataFrame()
+    df = pi_df.copy()
+    # normalize numeric and presence columns
+    if "retrieved_evidence_count" in df.columns:
+        df["retrieved_evidence_count"] = pd.to_numeric(df["retrieved_evidence_count"], errors="coerce")
+    df["has_answer"] = df.get("answer_summary", "").astype(str).str.strip().ne("")
+    df["has_evidence_ref"] = df.get("evidence_refs", "").astype(str).str.strip().ne("")
+
+    grouped = df.groupby(["topic_id", "topic_label"], dropna=False)
+    rows = []
+    for (topic_id, topic_label), group in grouped:
+        # collect unique session identifiers contributing to this topic
+        session_nums = sorted({str(x) for x in group.get("session_num", []) if str(x).strip()})
+        session_labels = sorted({str(x) for x in group.get("session_label", []) if str(x).strip()})
+        # confidence column may or may not exist in PI outputs
+        conf_col = "confidence" in group.columns
+        confidence = group["confidence"].astype(str) if conf_col else None
+        rows.append(
+            {
+                "topic_id": topic_id,
+                "topic_label": topic_label,
+                "session_nums": ";".join(session_nums) if session_nums else "",
+                "session_labels": ";".join(session_labels) if session_labels else "",
+                "pi_rows": len(group.index),
+                "mean_retrieved_evidence_count": round(group["retrieved_evidence_count"].mean(), 2) if "retrieved_evidence_count" in group else "",
+                "pct_rows_with_answer": round(pct(group["has_answer"]), 2),
+                "pct_rows_with_evidence_refs": round(pct(group["has_evidence_ref"]), 2),
+                "pct_confidence_high": round(100.0 * (confidence == "high").mean(), 2) if conf_col else "",
+                "pct_confidence_medium": round(100.0 * (confidence == "medium").mean(), 2) if conf_col else "",
+                "pct_confidence_low": round(100.0 * (confidence == "low").mean(), 2) if conf_col else "",
+            }
+        )
+    return pd.DataFrame(rows).sort_values(["topic_label"])
+
+
 def build_pi_by_cycle_and_question(pi_df: pd.DataFrame) -> pd.DataFrame:
     if pi_df.empty:
         return pd.DataFrame()
@@ -238,6 +280,92 @@ def build_pi_by_cycle_and_question(pi_df: pd.DataFrame) -> pd.DataFrame:
             }
         )
     return pd.DataFrame(rows).sort_values(["cycle_id", "question_id"])
+
+
+def build_pi_by_cycle_and_topic(pi_df: pd.DataFrame) -> pd.DataFrame:
+    """Aggregate PI answers by (cycle_id, topic_id, topic_label).
+
+    Produces per-cycle-per-topic counts and same summary metrics as other PI tables.
+    """
+    if pi_df.empty:
+        return pd.DataFrame()
+    df = pi_df.copy()
+    if "retrieved_evidence_count" in df.columns:
+        df["retrieved_evidence_count"] = pd.to_numeric(df["retrieved_evidence_count"], errors="coerce")
+    df["has_answer"] = df.get("answer_summary", "").astype(str).str.strip().ne("")
+    df["has_evidence_ref"] = df.get("evidence_refs", "").astype(str).str.strip().ne("")
+
+    grouped = df.groupby(["cycle_id", "topic_id", "topic_label"], dropna=False)
+    rows = []
+    for (cycle_id, topic_id, topic_label), group in grouped:
+        # collect unique session identifiers for this (cycle, topic)
+        session_nums = sorted({str(x) for x in group.get("session_num", []) if str(x).strip()})
+        session_labels = sorted({str(x) for x in group.get("session_label", []) if str(x).strip()})
+        confidence = group["confidence"].astype(str) if "confidence" in group.columns else None
+        rows.append(
+            {
+                "cycle_id": cycle_id,
+                "topic_id": topic_id,
+                "topic_label": topic_label,
+                "session_nums": ";".join(session_nums) if session_nums else "",
+                "session_labels": ";".join(session_labels) if session_labels else "",
+                "pi_rows": len(group.index),
+                "mean_retrieved_evidence_count": round(group["retrieved_evidence_count"].mean(), 2) if "retrieved_evidence_count" in group else "",
+                "pct_rows_with_answer": round(pct(group["has_answer"]), 2),
+                "pct_rows_with_evidence_refs": round(pct(group["has_evidence_ref"]), 2),
+                "pct_confidence_high": round(100.0 * (confidence == "high").mean(), 2) if confidence is not None else "",
+                "pct_confidence_medium": round(100.0 * (confidence == "medium").mean(), 2) if confidence is not None else "",
+                "pct_confidence_low": round(100.0 * (confidence == "low").mean(), 2) if confidence is not None else "",
+            }
+        )
+    return pd.DataFrame(rows).sort_values(["cycle_id", "topic_label"])
+
+
+def build_adjudication_by_cycle(fidelity_df: pd.DataFrame) -> pd.DataFrame:
+    """Aggregate adjudication labels (generation grade) by cycle.
+
+    Produces percent of rows with adjudication_label == high/moderate/low per cycle.
+    """
+    if fidelity_df.empty or "adjudication_label" not in fidelity_df.columns:
+        return pd.DataFrame()
+    df = fidelity_df.copy()
+    labels = df["adjudication_label"].astype(str)
+    grouped = df.groupby("cycle_id", dropna=False)
+    rows = []
+    for cycle_id, group in grouped:
+        lbl = group["adjudication_label"].astype(str)
+        rows.append(
+            {
+                "cycle_id": cycle_id,
+                "rows": len(group.index),
+                "pct_adjud_high": round(100.0 * (lbl == "high").mean(), 2),
+                "pct_adjud_moderate": round(100.0 * (lbl == "moderate").mean(), 2),
+                "pct_adjud_low": round(100.0 * (lbl == "low").mean(), 2),
+            }
+        )
+    return pd.DataFrame(rows).sort_values("cycle_id")
+
+
+def build_adjudication_confidence_by_cycle(fidelity_df: pd.DataFrame) -> pd.DataFrame:
+    """Aggregate adjudication confidence distribution (low/medium/high) by cycle."""
+    if fidelity_df.empty or "adjudication_confidence" not in fidelity_df.columns:
+        return pd.DataFrame()
+    df = fidelity_df.copy()
+    conf = df["adjudication_confidence"].astype(str)
+    grouped = df.groupby("cycle_id", dropna=False)
+    rows = []
+    for cycle_id, group in grouped:
+        c = group["adjudication_confidence"].astype(str)
+        rows.append(
+            {
+                "cycle_id": cycle_id,
+                "rows": len(group.index),
+                "pct_conf_high": round(100.0 * (c.str.lower() == "high").mean(), 2),
+                "pct_conf_medium": round(100.0 * (c.str.lower() == "medium").mean(), 2),
+                "pct_conf_low": round(100.0 * (c.str.lower() == "low").mean(), 2),
+            }
+        )
+    return pd.DataFrame(rows).sort_values("cycle_id")
 
 
 def build_evidence_by_cycle(evidence_df: pd.DataFrame) -> pd.DataFrame:
@@ -285,7 +413,18 @@ def main() -> None:
     write_csv(build_pi_by_cycle(pi_df), SUMMARY_DIR / "summary_pi_questions_by_cycle.csv")
     write_csv(build_pi_by_question(pi_df), SUMMARY_DIR / "summary_pi_questions_by_type.csv")
     write_csv(build_pi_by_cycle_and_question(pi_df), SUMMARY_DIR / "summary_pi_questions_by_cycle_and_type.csv")
+    write_csv(build_pi_by_topic(pi_df), SUMMARY_DIR / "summary_pi_questions_by_topic.csv")
+    write_csv(build_pi_by_cycle_and_topic(pi_df), SUMMARY_DIR / "summary_pi_questions_by_cycle_and_topic.csv")
     write_csv(build_evidence_by_cycle(evidence_df), SUMMARY_DIR / "summary_evidence_by_cycle.csv")
+
+    # New: adjudication-level aggregates (generation grade + confidence) by cycle
+    write_csv(build_adjudication_by_cycle(fidelity_df), SUMMARY_DIR / "summary_adjudication_by_cycle.csv")
+    write_csv(build_adjudication_confidence_by_cycle(fidelity_df), SUMMARY_DIR / "summary_adjudication_confidence_by_cycle.csv")
+
+    # Also produce adjudication summaries computed from the session-level fidelity table
+    # (session_fidelity_summary.csv -> session-level adjudication rollups)
+    write_csv(build_adjudication_by_cycle(session_fidelity_df), SUMMARY_DIR / "summary_adjudication_by_cycle_session.csv")
+    write_csv(build_adjudication_confidence_by_cycle(session_fidelity_df), SUMMARY_DIR / "summary_adjudication_confidence_by_cycle_session.csv")
 
     print(f"Wrote aggregate summary tables to {SUMMARY_DIR}")
 

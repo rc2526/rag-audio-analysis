@@ -11,406 +11,150 @@ The current working direction is:
 - keep PI questions topic-based
 - enrich PI queries with topic glosses derived from session summaries
 
-## Current Fidelity Design
+# AGENTS.md — Agent handoff
 
-Session-level fidelity is the primary fidelity mode.
+This file documents the project's current design, runbook, troubleshooting, and a compact handoff checklist so another engineer or automated agent can continue work reliably.
 
-It should work like this:
+Keep this file short and actionable. For longer background see `INCREMENTAL_RERUN_IMPLEMENTATION_PLAN.md` and `SESSION_LEVEL_FIDELITY_REDESIGN.md`.
 
-- one row per `cycle_id + manual_session_num`
-- retrieval is run directly from the session summary in `data/inputs/session_summaries.csv`
-- retrieval is against the full cycle transcript corpus
-- retrieved transcript windows are matched only against manual units from that manual session
-- outputs are written to:
-  - `data/derived/cycle_analysis/PMHCycleX/session_fidelity_summary.csv`
-  - `data/derived/cycle_analysis/PMHCycleX/session_fidelity_evidence.csv`
+## Quick summary
 
-The old design that merged topic-level fidelity windows into session fidelity should not be reintroduced.
+- Canonical fidelity mode: session-level fidelity (one row per `cycle_id + manual_session_num`).
+- PI questions (topic-anchored) are separate and saved to `pi_question_answers.csv` and `pi_question_answers.json` per cycle.
+- Topic-level fidelity is deprecated for long-term architecture; topic-level PI remains topic-anchored.
 
-## Session-Fidelity Query Update
+## Recent agent actions
 
-The session-fidelity query builder was updated to use a wrapped query with:
+- Patched `scripts/rebuild_topic_evidence_from_pi_json.py` to include `question_id` in the dedupe key so PI windows from different questions that share a retrieval_rank are not collapsed.
+- Rebuilt `topic_evidence.csv` for `PMHCycle1` from `pi_question_answers.json` (created `topic_evidence.csv.bak`); result: PMHCycle1 now contains all PI windows (1104) and had no topic-level `analysis_mode=fidelity` rows to preserve.
+- Ran the same rebuild script with `--apply` for PMHCycle2..PMHCycle5; backups were created for each cycle's `topic_evidence.csv`. Verify counts with the grep/wc checks in the runbook.
+ - Updated `scripts/run_cycle_analysis.py` to unguard PI question generation so PI runs per-topic whenever `--mode` includes `pi` (no need to set `--enable-topic-fidelity` for PI). Topic-level fidelity remains gated by `--enable-topic-fidelity`.
+ - Updated topic evidence dedupe in `scripts/run_cycle_analysis.py` to include `question_id` so evidence windows from different PI questions are not collapsed.
 
-- `Manual Session {n}` anchor
-- session-specific priority cues
-- an "Avoid generic themes from other sessions" instruction
-- the full session summary
+### Recent tooling and UI updates
 
-Code locations:
+- Added adjudication-level aggregates to `scripts/aggregate_cycle_outputs.py` (two new summary tables for generation grade and generation confidence by cycle) and also added session-level adjudication rollups. These are written under `data/derived/cycle_analysis/summary/` as `summary_adjudication_*` CSVs.
+- Added a dedicated "Summaries" tab to the Streamlit UI (`app/streamlit_app.py`) that lists only the CSVs produced by the aggregator, previews them with human-friendly column labels, offers a simple numeric plot, and provides a download button.
+- Added a starter Jupyter notebook at `notebooks/summary_visualizations.ipynb` to make quick visual exploration reproducible (loads aggregator CSVs and renders a few default charts).
+- Cleaned the `data/derived/cycle_analysis/summary/` folder to contain only aggregator-generated outputs and moved older auxiliary files (images, ad-hoc CSVs, JSON summaries, and a small report) into a timestamped archive folder `data/derived/cycle_analysis/summary/archived_20260413_200700/`. This archive is reversible — move files back if needed.
+- Updated `README.md` with documentation for the new summary files and the Summaries tab so the README remains the canonical pipeline source-of-truth.
 
-- [rag_audio_analysis/source_bridge.py](/Users/rheachatterjee/Documents/Playground/rag-audio-analysis/rag_audio_analysis/source_bridge.py)
-- [scripts/run_cycle_analysis.py](/Users/rheachatterjee/Documents/Playground/rag-audio-analysis/scripts/run_cycle_analysis.py)
-- [scripts/backfill_session_fidelity_outputs.py](/Users/rheachatterjee/Documents/Playground/rag-audio-analysis/scripts/backfill_session_fidelity_outputs.py)
+## What this agent is responsible for (contract)
 
-## Fidelity Rebuild Status
+Inputs
+- Raw transcripts and index metadata (local rag index rows).
+- `data/inputs/session_summaries.csv`, `data/derived/topic_catalog.csv`.
 
-The session-fidelity rebuild completed successfully on April 6, 2026.
+Outputs (per-cycle folder: `data/derived/cycle_analysis/PMHCycleX`)
+- `fidelity_summary.csv` (topic-level fidelity rows, only written when topic-level fidelity is enabled)
+- `session_fidelity_summary.csv` (session-level fidelity summaries)
+- `session_fidelity_evidence.csv` (retrieved windows for sessions)
+- `pi_question_answers.csv` and `pi_question_answers.json` (PI answers + evidence)
+- `topic_evidence.csv` (merged topic evidence for both fidelity and PI windows)
 
-Updated outputs now exist for all five cycles:
+Success criteria
+- CSVs are readable by the Streamlit app without KeyError (canonical columns present: `session_num` or `manual_session_num`, `question_id` when PI evidence exists).
+- `pi_question_answers.json` contains an `evidence` list of window dicts if PI retrieval succeeded.
 
-- `PMHCycle1`
-- `PMHCycle2`
-- `PMHCycle3`
-- `PMHCycle4`
-- `PMHCycle5`
+Error modes
+- Missing `pi_question_answers.json` or missing `evidence` arrays prevents full topic evidence reconstruction without re-running retrievals.
+- Mismatched column names across cycles (schema drift) can break the app; use `rag_audio_analysis/source_bridge.normalize_cycle_frame()` to harmonize.
 
-Aggregate summaries were also regenerated:
+## Where to edit (short map)
 
-- [data/derived/cycle_analysis/summary/summary_session_fidelity_by_cycle.csv](/Users/rheachatterjee/Documents/Playground/rag-audio-analysis/data/derived/cycle_analysis/summary/summary_session_fidelity_by_cycle.csv)
+- Retrieval, matching: `rag_audio_analysis/source_bridge.py`
+- High-level orchestration and CSV schema: `scripts/run_cycle_analysis.py`
+- Aggregation: `scripts/aggregate_cycle_outputs.py`
+- Streamlit app: `app/streamlit_app.py`
+- Settings and tunables: `settings.ini`
 
-Spot check result:
+## Quick runbook (common tasks)
 
-- saved `fidelity_query` in session-fidelity summaries now contains the tightened wrapper
-- saved `query_text` in session-fidelity evidence matches that wrapper
-- `source_topic_label` is blank in session-fidelity evidence, which is expected
+Run a full cycle build (slow):
 
-## PI Question Direction
+```zsh
+export PYTHONPATH="$PWD"
+.venv/bin/python scripts/run_cycle_analysis.py --cycles 1 2 3 4 5 --ollama-model gpt-oss:120b
+```
 
-PI questions should remain topic-based.
+Run a narrow targeted rerun (recommended for iteration):
 
-Do not convert PI retrieval to full session-summary retrieval by default.
+```zsh
+export PYTHONPATH="$PWD"
+.venv/bin/python scripts/run_cycle_analysis.py --cycles 1 --mode fidelity --session-num 1 --overwrite
+.venv/bin/python scripts/run_cycle_analysis.py --cycles 1 --mode pi --session-num 1 --ollama-model gpt-oss:120b
+.venv/bin/python scripts/aggregate_cycle_outputs.py
+```
 
-Instead, PI queries now include:
+Notes
+- Default flow is merge-safe (no `--overwrite`) for partial reruns.
+- Use `--overwrite` only when you intend to replace the per-cycle files.
 
-- session number
-- topic label
-- a gloss-style topic definition derived from the session summary
-- the question label
-- the original topic-based retrieval focus
-- short session summary context
+## Rebuilding `topic_evidence.csv` from PI outputs (without full re-run)
 
-This keeps PI retrieval topic-anchored while adding richer context.
+When PI runs completed and `pi_question_answers.json` exists, you can reconstruct `topic_evidence.csv` for that cycle from the JSON without re-running retrievals or model calls. High-level approach:
 
-Current PI question set now uses a single combined facilitator item instead of separate
-`facilitator_reference` and `facilitator_demonstration` questions:
+- Read `pi_question_answers.json` (it's a list of entries). Each entry contains fields like `cycle_id`, `session_num`, `topic_id`, `question_id`, and an `evidence` array.
+- For each evidence window in `evidence`, expand into one CSV row with `analysis_mode="pi_question"`, `question_id` set, and map window fields to the `topic_evidence.csv` columns (coalesce `rank`/`retrieval_rank`, `score`/`score_combined`, `manual_unit_id`/`manual_unit_id_best_match`).
+- If `pi_question_answers.json` is missing or `evidence` arrays are empty, full reconstruction is not possible — you can only create placeholder rows.
 
-- `facilitator_delivery`
-  - "How do facilitators introduce, reinforce, or demonstrate this topic or skill?"
-- `participant_practice`
-- `participant_child_home`
+Practical tips
+- Back up the existing `topic_evidence.csv` before overwriting (`.bak`).
+- Use retrieval window enumeration as a fallback `retrieval_rank` if one is not present.
+- After rebuilding per-cycle `topic_evidence.csv`, run `scripts/aggregate_cycle_outputs.py` and restart Streamlit if you want the UI to reflect changes.
 
-This change was made because the old facilitator-reference wording implied frequency/counting
-that the retrieval method does not support well, and the old two-question facilitator split
-had avoidable overlap.
+Reference script
+- A minimal, safe, stdlib-only script is provided in the developer notes (not checked into the repo by default); it reads `pi_question_answers.json`, expands `evidence` windows, writes `topic_evidence.csv`, and creates a `.bak` of the previous file.
 
-Main code location:
+## Common flags and their meaning
 
-- [scripts/run_cycle_analysis.py](/Users/rheachatterjee/Documents/Playground/rag-audio-analysis/scripts/run_cycle_analysis.py)
+- `--mode` ∈ {`all`, `fidelity`, `pi`} — controls which outputs are produced.
+- `--enable-topic-fidelity` — runs topic-level fidelity/adjudication and writes topic-level outputs; deprecated long-term but still available.
+- `--fidelity-topk` / `--question-topk` / `--fixed-fidelity-topk` — control top-k behavior.
+- `--session-num`, `--topic-id`, `--question-id` — targeted rerun filters.
+- `--overwrite` — replace per-cycle outputs rather than merge.
 
-## Topic Definitions
+## Troubleshooting quicklist
 
-Approved topic definitions are now stored in:
+- App KeyError on `question_id` or `session_num`: verify per-cycle CSVs contain canonical columns; aggregator or UI will tolerate `manual_session_num` vs `session_num` if normalized by `source_bridge.normalize_cycle_frame()`.
+- Empty PI evidence in UI but PI CSVs present: check `pi_question_answers.json` `evidence` arrays — if they are empty the retrieval returned no windows.
+- Model parsing failures (non-JSON): inspect `pi_question_answers.csv` `raw_response` column and use the rerun helper (review JSON -> rerun with `--dry-run`) to re-invoke the model with the stored prompt.
+- Slow runs: use targeted reruns with `--session-num` / `--topic-id` and prefer merge-mode to avoid rewrites of unrelated rows.
 
-- [data/derived/topic_catalog.csv](/Users/rheachatterjee/Documents/Playground/rag-audio-analysis/data/derived/topic_catalog.csv)
+## Verification checklist (post-change)
 
-The shared source of truth for those definitions is:
+Run these after any rerun or after major edits:
 
-- [rag_audio_analysis/source_bridge.py](/Users/rheachatterjee/Documents/Playground/rag-audio-analysis/rag_audio_analysis/source_bridge.py)
+1. Confirm per-cycle outputs exist:
+  - `ls data/derived/cycle_analysis/PMHCycle*/pi_question_answers.json`
+2. If you rebuilt `topic_evidence.csv`, confirm non-empty `question_id` values:
+  - `csvcut -c question_id data/derived/cycle_analysis/PMHCycle5/topic_evidence.csv | tail -n +2 | grep -v '^$' | wc -l`
+3. Aggregate summaries refreshed:
+  - `python scripts/aggregate_cycle_outputs.py`
+4. Restart Streamlit and spot-check the Evidence Browser filters.
 
-A preview artifact is also kept at:
+## Handoff checklist (what I expect the next agent/engineer to do)
 
-- [data/derived/topic_definition_preview_v3.csv](/Users/rheachatterjee/Documents/Playground/rag-audio-analysis/data/derived/topic_definition_preview_v3.csv)
+1. Open a Yale-attached VS Code session (recommended host: `rhea.chatterjeeyale.edu@MEDLQ9WNJ5CXJ.med.yale.internal`).
+2. Pull latest changes and confirm git status in that environment.
+3. If you need updated PI-backed topic evidence and `pi_question_answers.json` exists, run the rebuild-from-json script (backup first).
+4. Run `scripts/aggregate_cycle_outputs.py` and restart Streamlit to validate the UI.
+5. If further fixes are needed, change the small set of files listed above and use targeted reruns.
 
-These definitions were promoted from preview into the stored topic catalog on April 6, 2026 and should now be reused by:
+## Contacts & ownership
 
-- the Overview tab topic map
-- PI-query enrichment
-- future topic-catalog exports
+- Primary owner (runtime & infra): rhea.chatterjeeyale.edu
+- Code owner (analysis logic): look at `git blame` on `scripts/run_cycle_analysis.py` and `rag_audio_analysis/source_bridge.py` for recent authorship.
 
-## Topic Definitions In UI
+## Next suggested engineering work
 
-The Overview tab’s “Topic map by session” table reads and displays the stored `topic_definition` column from `topic_catalog.csv`.
+- Add an automated `rebuild_topic_evidence_from_pi_json.py` script to `scripts/` that also supports safe merge into existing `topic_evidence.csv` and preserves `topk_mode`/`topk_value` when present.
+- Add a small CI check that validates per-cycle CSV headers to catch schema drift early.
 
-Important:
+---
 
-- this is no longer UI-only
-- the UI should reflect the stored topic catalog definitions directly
-- if definitions look wrong in the app, regenerate the topic catalog rather than patching UI-only display logic
+If you want, I can add the rebuild script into `scripts/` and run a dry-run locally to show the delta rows that would be written.
 
-UI file:
-
-- [app/streamlit_app.py](/Users/rheachatterjee/Documents/Playground/rag-audio-analysis/app/streamlit_app.py)
-
-## Incremental Rerun Plan
-
-There is now a saved implementation note for the future rerun refactor:
-
-- [INCREMENTAL_RERUN_IMPLEMENTATION_PLAN.md](/Users/rheachatterjee/Documents/Playground/rag-audio-analysis/INCREMENTAL_RERUN_IMPLEMENTATION_PLAN.md)
-
-Important design constraint:
-
-- future rerun support should assume session-level fidelity only
-- topic-level fidelity should not be part of the intended long-term rerun architecture
-
-Where to change behavior (quick map)
-----------------------------------
-
-If you need to change behavior, these are the most common edit targets:
-
-- Retrieval, manual-unit parsing, and matching heuristics:
-  - `rag_audio_analysis/source_bridge.py`
-  - Tunables: `settings.ini` (sections: `transcript_export`, `topic_matching`, `manual_parsing`)
-
-- High-level orchestration, CSV schema, and run flags:
-  - `scripts/run_cycle_analysis.py`
-  - Tunables: `settings.ini` (`cycle_analysis`) and CLI flags like `--fidelity-topk`, `--fixed-fidelity-topk`.
-
-- Fidelity scoring implementation and where labels are set:
-  - `scripts/run_cycle_analysis.py` (`summarize_fidelity(...)`); change cutoffs in `[fidelity]` of `settings.ini`.
-
-- PI prompt wording and model parsing logic:
-  - `scripts/run_cycle_analysis.py` and helper prompt builders; `settings.ini` (`pi_questions`, `prompting`) controls template bits.
-
-- Streamlit UI layout, column labels, and interactive defaults:
-  - `app/streamlit_app.py`; many display defaults are pulled from `settings.ini` (`ui`, `chat`).
-
-- Aggregation and summary table layout:
-  - `scripts/aggregate_cycle_outputs.py`
-
-If you'd like, I can add a one-paragraph explanation to any of the files above that points to the exact function or lines to edit next time.
-
-Implementation status update:
-
-- `scripts/run_cycle_analysis.py` now supports targeted reruns with:
-  - `--mode all|fidelity|pi`
-  - `--session-num`
-  - `--topic-id`
-  - `--question-id`
-  - merge-safe partial rewrites by default
-  - `--overwrite` when a full replacement is intended
-
-- Fidelity top-k behavior (clarified)
-
-  By default the fidelity pipeline uses a dynamic top-k sized to the number of expected manual units for the session-topic. The resolver logic is:
-
-  - if dynamic mode is enabled (the default) and there are manual units for the session, top-k = max(len(manual_units), 1)
-  - otherwise top-k = the explicit `--fidelity-topk` value (or the `fidelity_topk` value from `settings.ini`)
-
-  Flags and defaults:
-
-  - `--fidelity-topk` (int) sets the explicit fallback top-k; default comes from `[cycle_analysis] fidelity_topk` in `settings.ini` (currently 12).
-  - `--fixed-fidelity-topk` disables dynamic behavior (it sets `dynamic_fidelity_topk = False`) so the pipeline will use the explicit `--fidelity-topk` value for every session-topic.
-  - dynamic behavior is the recommended default because it sizes retrieval to the session's expected manual-unit count.
-
-  Examples:
-
-  - Run with default dynamic top-k (sizes to expected manual units):
-
-    ```bash
-    .venv/bin/python scripts/run_cycle_analysis.py --cycles 1 2 3
-    ```
-
-  - Force a fixed top-k of 12 for all session-topic queries:
-
-    ```bash
-    .venv/bin/python scripts/run_cycle_analysis.py --fixed-fidelity-topk --fidelity-topk 12 --cycles 1
-    ```
-
-  - Use the `fidelity_topk` from `settings.ini` but force fixed behavior:
-
-    ```bash
-    .venv/bin/python scripts/run_cycle_analysis.py --fixed-fidelity-topk --cycles 1
-    ```
-
-## Retrieval Weighting Defaults
-
-Session fidelity now defaults to pure document similarity:
-
-- `fidelity_weight_doc = 1.0`
-- `fidelity_weight_topic = 0.0`
-
-This is intentional. Session fidelity no longer uses topic-based fidelity logic, so the old
-`0.5 / 0.5` blend was conceptually stale.
-
-PI questions currently remain:
-
-- `question_weight_doc = 1.0`
-- `question_weight_topic = 0.0`
-
-Rationale:
-
-- PI queries are already enriched with session number, topic label, stored topic definition,
-  and short session-summary context
-- for now, that richer query text is preferred over adding generic topic-embedding weighting
-
-## Remote Ollama Runtime
-
-Important runtime note:
-
-- the analysis repo on Yale does **not** have a local `ollama` binary on PATH
-- model-backed PI answering is intended to run by SSHing from the Yale analysis host to the
-  separate Ollama host configured in [settings.ini](/Users/rheachatterjee/Documents/Playground/rag-audio-analysis/settings.ini)
-
-Current configured remote Ollama settings:
-
-- `ssh_host = rc2526@10.168.224.148`
-- `ssh_key = ~/.ssh/ollama_remote`
-- `remote_bin = /usr/local/bin/ollama`
-- `default_model = gpt-oss:120b`
-
-Validated on April 6, 2026:
-
-- Yale can SSH to the configured Ollama host with the configured key
-- `/usr/local/bin/ollama` exists on the remote host
-- a tiny `ollama run gpt-oss:120b` call completed successfully from Yale
-
-One observed behavior:
-
-- `gpt-oss:120b` emits visible "thinking" text in raw CLI output before the final answer
-- the pipeline still successfully parsed a JSON answer in the smoke test, but this is worth
-  remembering if model-output parsing is revisited later
-
-## Ollama Smoke Test Result
-
-A one-row end-to-end PI smoke test completed successfully on Yale using:
-
-- `--cycles 1`
-- `--session-num 1`
-- `--topic-id role-of-stress-in-body-weight-and-food-intake`
-- `--question-id facilitator_delivery`
-- `--mode pi`
-- `--overwrite`
-- `--ollama-model gpt-oss:120b`
-
-What was confirmed:
-
-- `query_text` saved correctly
-- `prompt_text` saved correctly
-- `answer_summary` saved correctly
-- `raw_response` saved correctly
-- the JSON companion file also contained the full prompt and parsed answer object
-
-This means the remote-model-backed PI pipeline is working end to end.
-
-## Full Build Status
-
-As of the latest update in this session:
-
-- the full Yale build was relaunched with:
-  - `scripts/run_cycle_analysis.py --cycles 1 2 3 4 5 --ollama-model gpt-oss:120b`
-- it is writing progress to:
-  - [data/derived/cycle_analysis/full_build_ollama.log](/Users/rheachatterjee/Documents/Playground/rag-audio-analysis/data/derived/cycle_analysis/full_build_ollama.log)
-
-Important operational note:
-
-- the full Ollama-backed build is slow
-- output progress is easier to verify by checking file timestamps and partial cycle outputs than by relying on the sparse log alone
-- after the build completes, `scripts/aggregate_cycle_outputs.py` still needs to be rerun so the app reflects final outputs
-
-## Runtime Performance Note
-
-Important runtime clarification:
-
-- running `--cycles 1` is still a full `PMHCycle1` pass, not a single-session run
-- `PMHCycle1` currently spans 12 manual sessions and 46 topics
-- under the current design, that implies roughly:
-  - 46 topic-level fidelity retrieval passes
-  - 12 session-level fidelity retrieval passes
-  - 138 PI question passes (`46 topics x 3 questions`)
-- cycle outputs are written at end-of-cycle, so long periods with no changed CSV timestamps do not necessarily mean the run is stuck
-
-Observed April 6, 2026:
-
-- `PMHCycle1` reruns remained slow even when launched alone because the cycle still contains many retrieval and PI-answer steps
-- the process was observed alternating between:
-  - high local CPU / MPS retrieval work on Yale
-  - remote Ollama calls for PI answering
-
-## Retrieval Optimization Applied
-
-A low-risk optimization was applied to:
-
-- [rag_audio_analysis/source_bridge.py](/Users/rheachatterjee/Documents/Playground/rag-audio-analysis/rag_audio_analysis/source_bridge.py)
-
-Change:
-
-- `query_evidence()` now skips loading topic embeddings and skips document-topic similarity computation when `weight_topic <= 0`
-
-Why this is safe:
-
-- current configured defaults are:
-  - `fidelity_weight_doc = 1.0`
-  - `fidelity_weight_topic = 0.0`
-  - `question_weight_doc = 1.0`
-  - `question_weight_topic = 0.0`
-- so the skipped topic-score path was not contributing to ranking under the active settings
-
-Sync status:
-
-- the same patch was copied to the Yale-hosted repo at:
-  - `/Users/rhea.chatterjeeyale.edu/rag-audio-analysis/rag_audio_analysis/source_bridge.py`
-
-## Recent session updates (summary)
-
-Actions performed during the current working session (April 6–7, 2026):
-
-- Heuristic recovery and human-in-the-loop fixes for PI rows that previously failed with
-  non-JSON model responses: a multi-pass pipeline (embedded-JSON extraction, tolerant
-  parsing, short-answer refinement) produced a review artifact; proposed fixes were
-  reviewed and applied to per-cycle CSV/JSON outputs with timestamped backups (22 rows
-  updated across cycle outputs in the recent run).
-
-- Rerun tooling: a small rerun helper script was added/validated which accepts a
-  review JSON describing rows to rerun and will call the configured model using the
-  stored `prompt_text`, parse the response, and update only the targeted CSV/JSON rows
-  while creating backups. The script supports `--dry-run` for safety.
-
-- PI-confidence analytics: two new analysis notebooks were created to aggregate and
-  visualize PI confidence buckets and write review artifacts to the summary folder:
-  - `analysis/pi_confidence_by_question.ipynb` — produces
-    `data/derived/cycle_analysis/summary/pi_confidence_by_question_counts.csv` and
-    `pi_confidence_by_question_counts.png` (single stacked horizontal bar chart by
-    question, ordered by absolute high counts).
-  - `analysis/pi_confidence_by_topic.ipynb` — produces
-    `data/derived/cycle_analysis/summary/pi_confidence_by_topic_counts.csv` and
-    `pi_confidence_by_topic_counts.png` (single stacked horizontal bar chart by topic,
-    ordered so topics with the largest absolute `high` counts appear on top).
-
-- Plotting and legibility tweaks: the topic plotting code was iteratively adjusted to
-  (a) sort by absolute `high` counts, (b) enforce consistent bucket ordering
-  (`high|medium|low`), (c) invert the y-axis so highest-high appears at the top, and
-  (d) increase figure size, left margin, and DPI; an SVG export option is available if
-  vector-quality labels are preferable for publication.
-
-- Safety and operational notes: all automated writes create backups; the recommended
-  sequence for a targeted rerun remains: run the rerun script with `--dry-run`, then
-  rerun without `--dry-run` to apply changes, and finally run
-  `scripts/aggregate_cycle_outputs.py` and restart Streamlit if the app should reflect
-  the updates.
-
-Next recommended steps (options):
-
-- If you want me to re-run two specific PI rows you mentioned (PMH Cycle 1, Session 1
-  and PMH Cycle 4, Session 7), provide the model name to use (for example
-  `gpt-oss:120b`) and I'll: create a two-row review JSON, run the rerun script in
-  `--dry-run` mode to show expected changes, then run it to apply updates if you
-  confirm.
-
-- If topic label legibility is still insufficient in the PNGs, I can re-run the topic
-  notebook to export a high-resolution SVG and a larger PNG, or convert the plot to an
-  interactive HTML (Plotly) so full topic names are accessible via hover tooltips.
-
-## Ollama Confirmation During Cycle Runs
-
-Confirmed during the Yale `PMHCycle1` rerun:
-
-- PI answering is using the configured remote Ollama path
-- the Yale analysis process spawned child commands of the form:
-  - `ssh -i /Users/rhea.chatterjeeyale.edu/.ssh/ollama_remote -o BatchMode=yes rc2526@10.168.224.148 /usr/local/bin/ollama run gpt-oss:120b`
-
-This means:
-
-- retrieval is still performed locally on the Yale analysis host
-- PI answer generation is performed by the remote Ollama host
-
-## Practical Execution Guidance
-
-For reliable iteration:
-
-- do not assume `--cycles 1` is a quick smoke test; it is still a substantial full-cycle job
-- if faster inspection is needed, prefer narrower targeted reruns such as:
-  - `--session-num`
-  - `--topic-id`
   - `--question-id`
 - after any accepted cycle/session rerun, rerun `scripts/aggregate_cycle_outputs.py` before evaluating the app
 

@@ -658,75 +658,201 @@ def main() -> None:
             selected_session_topics = [topic for topic in session_topics if should_process_topic(str(topic.get("id", "")), args)]
             if args.topic_id and not selected_session_topics:
                 continue
-            # Topic-level fidelity/question generation is optional. By default we run
-            # session-level fidelity only. Set --enable-topic-fidelity to also run
-            # per-topic fidelity/adjudication and persist topic-level evidence.
-            if args.enable_topic_fidelity:
-                for topic in selected_session_topics:
-                    topic_count += 1
-                    if args.limit_topics and topic_count > args.limit_topics:
-                        break
-                    topic_id = topic.get("id", "")
-                    topic_label = topic.get("label", "")
-                    session_summary = get_session_summary(session_num).get("session_summary", "")
-                    topic_definition = get_topic_definition(topic_id, topic_label, session_summary)
-                    session_manual_units = get_manual_units_for_session(session_num, topic_id=topic_id)
+            # Iterate topics for the session. Topic-level fidelity is optional and
+            # only executed when the CLI flag is set; PI question generation runs
+            # per-topic whenever mode includes 'pi' (or 'all').
+            for topic in selected_session_topics:
+                topic_count += 1
+                if args.limit_topics and topic_count > args.limit_topics:
+                    break
+                topic_id = topic.get("id", "")
+                topic_label = topic.get("label", "")
+                session_summary = get_session_summary(session_num).get("session_summary", "")
+                topic_definition = get_topic_definition(topic_id, topic_label, session_summary)
+                session_manual_units = get_manual_units_for_session(session_num, topic_id=topic_id)
 
-                    if args.mode in {"all", "fidelity"}:
-                        fidelity_query = get_str("fidelity", "fidelity_query_template", "Session {session_num} {topic_label}").format(
+                # Topic-level fidelity/adjudication remains optional and only runs when the flag is set.
+                if args.enable_topic_fidelity and args.mode in {"all", "fidelity"}:
+                    fidelity_query = get_str("fidelity", "fidelity_query_template", "Session {session_num} {topic_label}").format(
+                        session_num=session_num,
+                        topic_label=topic_label,
+                    ).strip()
+                    resolved_topk = resolve_fidelity_topk(session_manual_units, args.fidelity_topk, args.dynamic_fidelity_topk)
+                    fidelity_windows = build_transcript_windows(
+                        fidelity_query,
+                        topic_id=topic_id,
+                        session_num=session_num,
+                        cycle_id=cycle_id,
+                        topk=resolved_topk,
+                        weight_doc=args.fidelity_weight_doc,
+                        weight_topic=args.fidelity_weight_topic,
+                        meta_rows=meta_rows,
+                        path_lookup=path_lookup,
+                        window=args.context_window,
+                    )
+                    fidelity_row = summarize_fidelity(cycle_id, session_num, topic, fidelity_windows, session_manual_units)
+                    # annotate which topk mode/value produced this row
+                    fidelity_row["topk_mode"] = run_topk_mode
+                    fidelity_row["topk_value"] = str(resolved_topk)
+                    if args.fidelity_ollama_model:
+                        prompt = build_topic_fidelity_adjudication_prompt(
+                            cycle_id,
+                            session_num,
+                            topic,
+                            session_manual_units,
+                            fidelity_windows,
+                        )
+                        payload = parse_json_response(
+                            call_ollama(
+                                prompt,
+                                args.fidelity_ollama_model,
+                                ollama_ssh_host=args.ollama_ssh_host,
+                                ollama_ssh_key=args.ollama_ssh_key,
+                                ollama_remote_bin=args.ollama_remote_bin,
+                            )
+                        )
+                        fidelity_row.update(fidelity_generation_fields(payload, prompt))
+
+                    fidelity_rows.append(fidelity_row)
+                    for row in fidelity_windows:
+                        evidence_rows.append(
+                            {
+                                "cycle_id": cycle_id,
+                                "session_num": session_num,
+                                "topic_id": topic_id,
+                                "topic_label": topic_label,
+                                "analysis_mode": "fidelity",
+                                "question_id": "",
+                                "query_text": fidelity_query,
+                                "retrieval_rank": row.get("retrieval_rank", ""),
+                                "session_id": row.get("session_id", ""),
+                                "speaker": row.get("speaker", ""),
+                                "score_combined": row.get("score_combined", ""),
+                                "score_doc": row.get("score_doc", ""),
+                                "score_topic": row.get("score_topic", ""),
+                                "manual_unit_id_best_match": row.get("manual_unit_id_best_match", ""),
+                                "manual_unit_match_score": row.get("manual_unit_match_score", ""),
+                                "text": row.get("text", ""),
+                                "excerpt": format_evidence_excerpt(row.get("text", "")),
+                                "topk_mode": run_topk_mode,
+                                "topk_value": str(resolved_topk),
+                            }
+                        )
+
+                # PI question generation runs per-topic when mode includes 'pi'
+                if args.mode in {"all", "pi"}:
+                    for question_spec in PI_QUESTION_SPECS:
+                        if args.mode == "fidelity" or not should_process_question(question_spec["question_id"], args):
+                            continue
+                        query_text = build_pi_query_text(
                             session_num=session_num,
                             topic_label=topic_label,
-                        ).strip()
-                        resolved_topk = resolve_fidelity_topk(session_manual_units, args.fidelity_topk, args.dynamic_fidelity_topk)
-                        fidelity_windows = build_transcript_windows(
-                            fidelity_query,
+                            topic_definition=topic_definition,
+                            question_label=question_spec["label"],
+                            query_template=question_spec["query_template"],
+                            session_summary=session_summary,
+                        )
+                        question_windows = build_transcript_windows(
+                            query_text,
                             topic_id=topic_id,
                             session_num=session_num,
                             cycle_id=cycle_id,
-                            topk=resolved_topk,
-                            weight_doc=args.fidelity_weight_doc,
-                            weight_topic=args.fidelity_weight_topic,
+                            topk=args.question_topk,
+                            weight_doc=args.question_weight_doc,
+                            weight_topic=args.question_weight_topic,
                             meta_rows=meta_rows,
                             path_lookup=path_lookup,
                             window=args.context_window,
                         )
-                        fidelity_row = summarize_fidelity(cycle_id, session_num, topic, fidelity_windows, session_manual_units)
-                        # annotate which topk mode/value produced this row
-                        fidelity_row["topk_mode"] = run_topk_mode
-                        fidelity_row["topk_value"] = str(resolved_topk)
-                        if args.fidelity_ollama_model:
-                            prompt = build_topic_fidelity_adjudication_prompt(
-                                cycle_id,
-                                session_num,
-                                topic,
-                                session_manual_units,
-                                fidelity_windows,
-                            )
-                            payload = parse_json_response(
+                        answer_payload: dict[str, Any] = {}
+                        prompt = ""
+                        if args.ollama_model and question_windows:
+                            prompt = build_question_prompt(cycle_id, session_num, topic, question_spec, question_windows, session_manual_units)
+                            answer_payload = parse_json_response(
                                 call_ollama(
                                     prompt,
-                                    args.fidelity_ollama_model,
+                                    args.ollama_model,
                                     ollama_ssh_host=args.ollama_ssh_host,
                                     ollama_ssh_key=args.ollama_ssh_key,
                                     ollama_remote_bin=args.ollama_remote_bin,
                                 )
                             )
-                            fidelity_row.update(fidelity_generation_fields(payload, prompt))
+                        answer_summary = answer_payload.get("answer_summary", "")
+                        confidence = answer_payload.get("confidence", "")
+                        confidence_explanation = answer_payload.get("confidence_explanation", "")
 
-                        # Persist the topic-level fidelity row (if enabled)
-                        fidelity_rows.append(fidelity_row)
+                        if not answer_summary and isinstance(answer_payload, dict) and answer_payload.get("fallback_answer"):
+                            answer_summary = answer_payload.get("fallback_answer", "")
+                            if not confidence_explanation:
+                                confidence_explanation = "Parsed fallback answer from non-JSON model output; see raw_response for full text."
 
-                        # Persist retrieved evidence windows for this topic
-                        for row in fidelity_windows:
+                        if not answer_summary and not question_windows:
+                            answer_summary = "No retrieved evidence was found for this question."
+                            confidence_explanation = "No evidence — model not invoked."
+                        evidence_refs = ";".join(answer_payload.get("evidence_refs", [])) if isinstance(answer_payload.get("evidence_refs", list), list) else ""
+                        manual_ids = ";".join(answer_payload.get("manual_unit_ids", [])) if isinstance(answer_payload.get("manual_unit_ids", list), list) else ""
+
+                        if evidence_refs:
+                            if evidence_refs not in (answer_summary or ""):
+                                sep = " " if answer_summary and not answer_summary.endswith(".") else " "
+                                answer_summary = (answer_summary or "") + f"{sep}Evidence refs: {evidence_refs}"
+                        if not confidence_explanation:
+                            if isinstance(answer_payload, dict) and answer_payload.get("raw_response"):
+                                if not answer_payload.get("fallback_answer"):
+                                    confidence_explanation = "Model returned a non-JSON response; see raw_response for details."
+                            elif answer_payload:
+                                confidence_explanation = "No confidence explanation provided."
+
+                        if not answer_summary and question_windows:
+                            if isinstance(answer_payload, dict) and answer_payload.get("raw_response"):
+                                if not answer_payload.get("fallback_answer"):
+                                    answer_summary = "Model returned a non-JSON response; see raw_response."
+                            else:
+                                answer_summary = "Model did not produce an answer."
+                        question_rows.append(
+                            {
+                                "cycle_id": cycle_id,
+                                "session_num": session_num,
+                                "session_label": topic.get("session_label", f"Session {session_num}"),
+                                "topic_id": topic_id,
+                                "topic_label": topic_label,
+                                "question_id": question_spec["question_id"],
+                                "question_label": question_spec["label"],
+                                "query_text": query_text,
+                                "retrieved_evidence_count": str(len(question_windows)),
+                                "prompt_text": prompt,
+                                "answer_summary": answer_summary,
+                                "confidence": confidence,
+                                "confidence_explanation": confidence_explanation,
+                                "evidence_refs": evidence_refs,
+                                "manual_unit_ids": manual_ids,
+                                "raw_response": json.dumps(answer_payload, ensure_ascii=False) if answer_payload else "",
+                            }
+                        )
+                        question_json_rows.append(
+                            {
+                                "cycle_id": cycle_id,
+                                "session_num": session_num,
+                                "topic_id": topic_id,
+                                "topic_label": topic_label,
+                                "question_id": question_spec["question_id"],
+                                "query_text": query_text,
+                                "prompt_text": prompt,
+                                "answer": answer_payload,
+                                "evidence": question_windows,
+                            }
+                        )
+
+                        for row in question_windows:
                             evidence_rows.append(
                                 {
                                     "cycle_id": cycle_id,
                                     "session_num": session_num,
                                     "topic_id": topic_id,
                                     "topic_label": topic_label,
-                                    "analysis_mode": "fidelity",
-                                    "question_id": "",
-                                    "query_text": fidelity_query,
+                                    "analysis_mode": "pi_question",
+                                    "question_id": question_spec["question_id"],
+                                    "query_text": query_text,
                                     "retrieval_rank": row.get("retrieval_rank", ""),
                                     "session_id": row.get("session_id", ""),
                                     "speaker": row.get("speaker", ""),
@@ -737,137 +863,8 @@ def main() -> None:
                                     "manual_unit_match_score": row.get("manual_unit_match_score", ""),
                                     "text": row.get("text", ""),
                                     "excerpt": format_evidence_excerpt(row.get("text", "")),
-                                    "topk_mode": run_topk_mode,
-                                    "topk_value": str(resolved_topk),
                                 }
                             )
-
-                        for question_spec in PI_QUESTION_SPECS:
-                            if args.mode == "fidelity" or not should_process_question(question_spec["question_id"], args):
-                                continue
-                            query_text = build_pi_query_text(
-                                session_num=session_num,
-                                topic_label=topic_label,
-                                topic_definition=topic_definition,
-                                question_label=question_spec["label"],
-                                query_template=question_spec["query_template"],
-                                session_summary=session_summary,
-                            )
-                            question_windows = build_transcript_windows(
-                                query_text,
-                                topic_id=topic_id,
-                                session_num=session_num,
-                                cycle_id=cycle_id,
-                                topk=args.question_topk,
-                                weight_doc=args.question_weight_doc,
-                                weight_topic=args.question_weight_topic,
-                                meta_rows=meta_rows,
-                                path_lookup=path_lookup,
-                                window=args.context_window,
-                            )
-                            answer_payload: dict[str, Any] = {}
-                            prompt = ""
-                            if args.ollama_model and question_windows:
-                                prompt = build_question_prompt(cycle_id, session_num, topic, question_spec, question_windows, session_manual_units)
-                                answer_payload = parse_json_response(
-                                    call_ollama(
-                                        prompt,
-                                        args.ollama_model,
-                                        ollama_ssh_host=args.ollama_ssh_host,
-                                        ollama_ssh_key=args.ollama_ssh_key,
-                                        ollama_remote_bin=args.ollama_remote_bin,
-                                    )
-                                )
-                            answer_summary = answer_payload.get("answer_summary", "")
-                            confidence = answer_payload.get("confidence", "")
-                            confidence_explanation = answer_payload.get("confidence_explanation", "")
-
-                            if not answer_summary and isinstance(answer_payload, dict) and answer_payload.get("fallback_answer"):
-                                answer_summary = answer_payload.get("fallback_answer", "")
-                                if not confidence_explanation:
-                                    confidence_explanation = "Parsed fallback answer from non-JSON model output; see raw_response for full text."
-
-                            if not answer_summary and not question_windows:
-                                answer_summary = "No retrieved evidence was found for this question."
-                                confidence_explanation = "No evidence — model not invoked."
-                            evidence_refs = ";".join(answer_payload.get("evidence_refs", [])) if isinstance(answer_payload.get("evidence_refs", list), list) else ""
-                            manual_ids = ";".join(answer_payload.get("manual_unit_ids", [])) if isinstance(answer_payload.get("manual_unit_ids", list), list) else ""
-
-                            if evidence_refs:
-                                if evidence_refs not in (answer_summary or ""):
-                                    sep = " " if answer_summary and not answer_summary.endswith(".") else " "
-                                    answer_summary = (answer_summary or "") + f"{sep}Evidence refs: {evidence_refs}"
-                            if not confidence_explanation:
-                                if isinstance(answer_payload, dict) and answer_payload.get("raw_response"):
-                                    if not answer_payload.get("fallback_answer"):
-                                        confidence_explanation = "Model returned a non-JSON response; see raw_response for details."
-                                elif answer_payload:
-                                    confidence_explanation = "No confidence explanation provided."
-
-                            if not answer_summary and question_windows:
-                                if isinstance(answer_payload, dict) and answer_payload.get("raw_response"):
-                                    if not answer_payload.get("fallback_answer"):
-                                        answer_summary = "Model returned a non-JSON response; see raw_response."
-                                else:
-                                    answer_summary = "Model did not produce an answer."
-                            question_rows.append(
-                                {
-                                    "cycle_id": cycle_id,
-                                    "session_num": session_num,
-                                    "session_label": topic.get("session_label", f"Session {session_num}"),
-                                    "topic_id": topic_id,
-                                    "topic_label": topic_label,
-                                    "question_id": question_spec["question_id"],
-                                    "question_label": question_spec["label"],
-                                    "query_text": query_text,
-                                    "retrieved_evidence_count": str(len(question_windows)),
-                                    "prompt_text": prompt,
-                                    "answer_summary": answer_summary,
-                                    "confidence": confidence,
-                                    "confidence_explanation": confidence_explanation,
-                                    "evidence_refs": evidence_refs,
-                                    "manual_unit_ids": manual_ids,
-                                    "raw_response": json.dumps(answer_payload, ensure_ascii=False) if answer_payload else "",
-                                }
-                            )
-                            question_json_rows.append(
-                                {
-                                    "cycle_id": cycle_id,
-                                    "session_num": session_num,
-                                    "topic_id": topic_id,
-                                    "topic_label": topic_label,
-                                    "question_id": question_spec["question_id"],
-                                    "query_text": query_text,
-                                    "prompt_text": prompt,
-                                    "answer": answer_payload,
-                                    "evidence": question_windows,
-                                }
-                            )
-
-                            for row in question_windows:
-                                evidence_rows.append(
-                                    {
-                                        "cycle_id": cycle_id,
-                                        "session_num": session_num,
-                                        "topic_id": topic_id,
-                                        "topic_label": topic_label,
-                                        "analysis_mode": "pi_question",
-                                        "question_id": question_spec["question_id"],
-                                        "query_text": query_text,
-                                        "retrieval_rank": row.get("retrieval_rank", ""),
-                                        "session_id": row.get("session_id", ""),
-                                        "speaker": row.get("speaker", ""),
-                                        "score_combined": row.get("score_combined", ""),
-                                        "score_doc": row.get("score_doc", ""),
-                                        "score_topic": row.get("score_topic", ""),
-                                        "manual_unit_id_best_match": row.get("manual_unit_id_best_match", ""),
-                                        "manual_unit_match_score": row.get("manual_unit_match_score", ""),
-                                        "text": row.get("text", ""),
-                                        "excerpt": format_evidence_excerpt(row.get("text", "")),
-                                    }
-                                )
-            if args.limit_topics and topic_count >= args.limit_topics:
-                break
 
             if args.mode == "pi":
                 continue
@@ -1147,8 +1144,8 @@ def main() -> None:
                 encoding="utf-8",
             )
         if args.mode in {"all", "fidelity", "pi"}:
-            # Dedupe topic evidence by (cycle_id, session_num, topic_id, retrieval_rank)
-            evidence_rows = dedupe_rows_keep_last(evidence_rows, ["cycle_id", "session_num", "topic_id", "retrieval_rank"])
+            # Dedupe topic evidence by (cycle_id, session_num, topic_id, question_id, retrieval_rank)
+            evidence_rows = dedupe_rows_keep_last(evidence_rows, ["cycle_id", "session_num", "topic_id", "question_id", "retrieval_rank"])
             write_csv(
                 cycle_dir / "topic_evidence.csv",
                 [
