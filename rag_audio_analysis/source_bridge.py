@@ -838,6 +838,7 @@ def query_evidence(
     weight_topic: Optional[float] = None,
     cycle_id: str = "",
     transcript_only: bool = True,
+    manual_only: bool = False,
     model_name: Optional[str] = None,
 ) -> list[dict[str, Any]]:
     if topk is None:
@@ -861,6 +862,10 @@ def query_evidence(
         path = str(row.get("path", "") or "")
         if cycle_id and cycle_id not in path:
             continue
+        # If caller requests manual-only, skip any non-manual rows at the index level.
+        if manual_only and not is_manual_row(row):
+            continue
+        # If caller requested transcript-only, skip manual rows.
         if transcript_only and is_manual_row(row):
             continue
         candidates.append(idx)

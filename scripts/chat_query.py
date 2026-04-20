@@ -14,6 +14,7 @@ def main() -> None:
     parser.add_argument("--weight-doc", type=float, default=get_float("chat", "weight_doc", 1.0))
     parser.add_argument("--weight-topic", type=float, default=get_float("chat", "weight_topic", 0.0))
     parser.add_argument("--include-manual", action="store_true")
+    parser.add_argument("--manual-only", action="store_true", help="Restrict index-level retrieval to manual passages only")
     parser.add_argument("--answer-with-model", action="store_true")
     parser.add_argument("--ollama-model", default=get_str("ollama", "default_model", "gpt-oss:120b"))
     parser.add_argument("--ollama-ssh-host", default=get_str("ollama", "ssh_host", "rc2526@10.168.224.148"))
@@ -28,6 +29,7 @@ def main() -> None:
         weight_doc=args.weight_doc,
         weight_topic=args.weight_topic,
         include_manual=args.include_manual,
+    manual_only=args.manual_only,
         answer_with_model=args.answer_with_model,
         ollama_model=args.ollama_model,
         ollama_ssh_host=args.ollama_ssh_host,

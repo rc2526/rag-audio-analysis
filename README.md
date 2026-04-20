@@ -104,6 +104,12 @@ Behavioral notes and safety
 - Topic evidence dedupe key includes `question_id` so PI windows for different questions are not collapsed. Recent changes preserved `analysis_mode="fidelity"` rows during merges so authoritative fidelity rows are not removed by PI rebuilds.
 - `scripts/rebuild_topic_evidence_from_pi_json.py` defaults to a dry-run; `--apply` creates `.bak` backups before writing.
 
+Note: topic-level fidelity outputs are only created when you run the cycle analysis with the
+`--enable-topic-fidelity` flag (see `scripts/run_cycle_analysis.py`). The aggregator
+(`scripts/aggregate_cycle_outputs.py`) will include topic-level fidelity files in
+`data/derived/cycle_analysis/summary/` only if the per-cycle `fidelity_summary.csv` files
+exist; the aggregator does not manufacture topic-level fidelity outputs on its own.
+
 Operational examples
 ```
 python3 scripts/run_cycle_analysis.py --mode all
@@ -165,6 +171,8 @@ The aggregator now writes session-level adjudication rollups in addition to topi
 
 - `summary_adjudication_by_cycle_session.csv` — percent breakdown of `adjudication_label` (high/moderate/low) computed from `session_fidelity_summary.csv` grouped by `cycle_id`.
 - `summary_adjudication_confidence_by_cycle_session.csv` — percent breakdown of `adjudication_confidence` (high/medium/low) computed from `session_fidelity_summary.csv` grouped by `cycle_id`.
+- `summary_adjudication_by_manual_session.csv` — percent breakdown of `adjudication_label` (high/moderate/low) computed from `session_fidelity_summary.csv` grouped by `manual_session_num`.
+- `summary_adjudication_confidence_by_manual_session.csv` — percent breakdown of `adjudication_confidence` (high/medium/low) computed from `session_fidelity_summary.csv` grouped by `manual_session_num`.
 
 Behavior note: the aggregator reads available per-cycle CSVs and skips missing files. If a cycle lacks `fidelity_summary.csv` (topic-level rows) but has `session_fidelity_summary.csv`, the session-level adjudication files will still include that cycle. 
 
@@ -193,6 +201,80 @@ Manual units are then assigned:
 - session and subsection metadata
 
 `manual_function` and `manual_skill_type` were intentionally removed from the current schema because they were heuristic labels and not part of the embedding-based matching workflow.
+
+## Streamlit UI fidelity prompt behavior
+
+The Streamlit `RAG Chat` tab includes a `Prompt variant` option. When you choose the `fidelity` variant the app will include an "Expected manual units" section in the model prompt. To keep the interactive prompt identical to the batch `run_cycle_analysis` behavior, the app now fetches the same session-scoped manual units using `get_manual_units_for_session(session_num, topic_id)` before building the fidelity prompt. This avoids listing the entire manual corpus in the prompt and ensures parity between ad-hoc UI tests and automated cycle runs.
+
+To reproduce the run-cycle behavior from a Python REPL inside the repo (example):
+
+```python
+from rag_audio_analysis.source_bridge import get_manual_units_for_session
+from rag_audio_analysis.chat_runner import build_chat_prompt, run_chat_query
+
+# choose session and optional topic
+session_num = "2"
+topic_id = ""  # or supply a slug/id
+
+# get session-scoped manual units (same as run_cycle_analysis)
+manual_units = get_manual_units_for_session(session_num, topic_id=topic_id)
+
+# run retrieval and build fidelity prompt (no model call here)
+payload = run_chat_query(
+  question=f"Fidelity check for Session {session_num}",
+  cycle_id="PMHCycle1",
+  topk=8,
+  weight_doc=1.0,
+  weight_topic=0.0,
+  include_manual=False,
+  answer_with_model=False,
+  prompt_variant="fidelity",
+  session_num=session_num,
+  topic={"id": topic_id, "label": ""},
+  manual_units=manual_units,
+)
+
+print(payload["prompt_text"][:2000])
+```
+
+If you use the Streamlit UI, the `Preview prompt` button (in the RAG Chat tab) will now call the same selector under the hood when `Prompt variant` is set to `fidelity`.
+
+Note on recent prompt/enrichment changes (2026-04-17):
+
+- The chat runner was updated to attach `manual_week` and `manual_session` to each enriched evidence row and the prompt evidence lines now include `manual_session` and `score=<manual_unit_match_score>`.
+- This improves the model's ability to identify which manual session a transcript excerpt refers to when retrieved evidence includes windows from multiple sessions.
+- Saved `rag_chat_*.json` outputs or other exported prompts created before this date will not show `manual_session` in the stored `prompt_text`. To get prompts with the new evidence labels, re-run the chat or regenerate the relevant per-cycle outputs.
+
+Additional prompt contract and UI notes (2026-04-20):
+
+- The prompt templates now instruct the model to return a strict JSON object that must include `session_number` (integer, use -1 if unknown) and a concise `session_explanation` (1–3 sentences) that cites which evidence lines were used (e.g. "E2, E5") and why they indicate the chosen session.
+- If the model omits `session_number`, the runner applies a deterministic fallback (majority `manual_week` among retrieved evidence) and sets `session_inferred: true` and an autogenerated `session_explanation` describing the heuristic.
+- The Streamlit `RAG Chat` tab surfaces the `session_explanation` in an expander called "How session was chosen" and shows when the session was inferred by the fallback.
+
+## Manual-only retrieval (RAG Chat)
+
+The RAG Chat UI includes a "Manual-only retrieval (no fallback)" checkbox in Advanced controls. When checked the app requests index-level manual-only retrieval by calling `run_chat_query(..., include_manual=True, manual_only=True)`.
+
+Behavior notes:
+
+- Index expectation: the external RAG index meta (configured by `SOURCE_META` in `rag_audio_analysis/config.py`) must include manual passages that follow the repository convention: `source == "manual.txt"` or a `path` that ends with `/manual.txt`.
+- If manual-only runs return zero manual rows, inspect the index `meta.json` to verify manual rows exist and match the expected convention.
+- Use the diagnostic script `scripts/debug_list_manual_index.py` included in this repo to list and sample manual rows from the configured index meta file.
+
+Diagnostic script usage:
+
+```bash
+source .venv/bin/activate
+python3 scripts/debug_list_manual_index.py
+```
+
+If your index labels manual rows differently, either rebuild the index so manual chunks use the `manual.txt` convention or adjust `is_manual_row()` in `rag_audio_analysis/source_bridge.py` to accept your index's convention.
+
+How to test the session explanation behavior
+
+1. In the Streamlit app, open the `RAG Chat` tab and use `Preview prompt` to verify the prompt includes instructions to return JSON with `session_number` and `session_explanation`.
+2. Run a chat with `Generate answer with gpt-oss:120b` enabled. Inspect the returned JSON in the UI (or download the result JSON). Confirm `session_number` and `session_explanation` are present.
+3. If the model omits `session_number`, confirm the payload contains `session_inferred: true` and an autogenerated `session_explanation` describing the fallback heuristic.
 
 ## Matching and Retrieval
 
@@ -420,6 +502,7 @@ The current UI includes:
 - `Evidence Browser`
 - `Manual Units`
 - `RAG Chat`
+- `Visuals`
 
 ### RAG Chat
 
@@ -482,6 +565,43 @@ PI-question rows currently include:
 - raw JSON response
 
 These outputs are intended to be evidence-constrained summaries, not independent ground-truth coding.
+
+## Recent changes (2026-04-14)
+
+This project received updates to the aggregation pipeline and Streamlit UI to improve PI (program indicator) summaries and surface session-level adjudication metrics.
+
+What changed
+- Aggregator (`scripts/aggregate_cycle_outputs.py`)
+  - Writes grouped summary CSVs to `data/derived/cycle_analysis/summary/pi_questions/` and `.../summary/fidelity/` alongside the existing root summary files.
+  - Emits new session-level adjudication summaries:
+    - `summary_adjudication_by_manual_session.csv`
+    - `summary_adjudication_confidence_by_manual_session.csv`
+  - Produces PI-only outputs (to avoid fidelity-row contamination of PI metrics) and per-cycle PI summaries used by the UI.
+
+- Streamlit app (`app/streamlit_app.py`)
+  - New `Visuals` tab that includes:
+    - Manual Adherence (Fidelity) summary: mean adherence score, adjudication percent by cycle, adjudication-confidence by cycle, and session-level adjudication & adjudication-confidence stacked bar charts (per manual session).
+    - LLM Summaries of PI Questions: PI charts by topic, cycle, question type, cycle+topic, and cycle+question type (cycle+question type prefers percent-with-evidence refs when available).
+  - The app prefers grouped summary files and falls back to root-level summary CSVs for backward compatibility.
+
+How to reproduce locally
+1. Regenerate summaries:
+
+```bash
+python scripts/aggregate_cycle_outputs.py
+```
+
+2. Start the Streamlit UI:
+
+```bash
+streamlit run app/streamlit_app.py
+```
+
+Verification
+- The aggregator was run and completed successfully in the development environment; it produced the new CSVs in `data/derived/cycle_analysis/summary/` and grouped subfolders.
+- If charts report missing columns, check the corresponding CSV in `data/derived/cycle_analysis/summary/` (or the grouped `pi_questions` / `fidelity` subfolders).
+
+If you want, I can also add brief examples of the new CSV schemas to this README or add a small verification script that checks presence and basic validity of the new files.
 
 ## Git / Repo Notes
 

@@ -6,14 +6,22 @@ import sys
 
 import pandas as pd
 import streamlit as st
+import altair as alt
+import matplotlib.pyplot as plt
+import seaborn as sns
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from rag_audio_analysis.chat_runner import run_chat_query
+from rag_audio_analysis.chat_runner import (
+    run_chat_query,
+    build_chat_prompt,
+    call_ollama,
+    parse_json_response,
+)
 from rag_audio_analysis.config import CYCLE_ANALYSIS_DIR, MANUAL_UNITS_CSV, TOPIC_CATALOG_CSV
-from rag_audio_analysis.source_bridge import normalize_cycle_frame
+from rag_audio_analysis.source_bridge import normalize_cycle_frame, get_manual_units_for_session
 from rag_audio_analysis.settings import get_float, get_int, get_str
 
 
@@ -29,7 +37,6 @@ UI_EXCERPT_CHARS = get_int("prompting", "ui_excerpt_chars", 280)
 st.set_page_config(page_title=APP_TITLE, layout="wide")
 st.title(APP_TITLE)
 st.caption(APP_CAPTION)
-
 
 QUESTION_LABELS = {
     "facilitator_delivery": "Facilitator delivery",
@@ -222,19 +229,6 @@ def add_readable_columns(df: pd.DataFrame) -> pd.DataFrame:
     return display
 
 
-def render_key() -> None:
-    with st.expander("How to read this app", expanded=False):
-        st.markdown("**Fidelity values**")
-        st.write("The primary fidelity view is cycle-level alignment to session-structured manual content.")
-        st.write("Manual-unit coverage: matched manual units / expected manual units for a manual session within a cycle.")
-        st.write("Subsection coverage: matched manual subsections / expected manual subsections for a manual session within a cycle.")
-        st.write("Adherence score: `0.6 * manual-unit coverage + 0.4 * subsection coverage`.")
-        st.write("Adherence label: `high` if score >= 0.66, `moderate` if >= 0.33, otherwise `low`.")
-        st.markdown("**PI-question answers**")
-        st.write("These are automated `gpt-oss:120b` summaries constrained to retrieved evidence and matching manual units.")
-        st.markdown("**Retrieved evidence**")
-        st.write("These are the evidence windows pulled from transcripts for cycle-level fidelity or PI-question mode.")
-
 
 # Provide a simple mechanism to force full reloads when the user clicks the
 # sidebar "Reload data from disk" button. We don't use @st.cache here to keep
@@ -322,6 +316,18 @@ if selected_session != "All sessions" and "manual_week" in manual_view.columns:
 if selected_topic != "All topics" and "topic_id" in manual_view.columns:
     manual_view = manual_view[manual_view["topic_id"].astype(str) == selected_topic]
 
+def render_key() -> None:
+    with st.expander("How to read this app", expanded=False):
+        st.markdown("**Fidelity values**")
+        st.write("The primary fidelity view is cycle-level alignment to session-structured manual content.")
+        st.write("Manual-unit coverage: matched manual units / expected manual units for a manual session within a cycle.")
+        st.write("Subsection coverage: matched manual subsections / expected manual subsections for a manual session within a cycle.")
+        st.write("Adherence score: `0.6 * manual-unit coverage + 0.4 * subsection coverage`.")
+        st.write("Adherence label: `high` if score >= 0.66, `moderate` if >= 0.33, otherwise `low`.")
+        st.markdown("**PI-question answers**")
+        st.write("These are automated `gpt-oss:120b` summaries constrained to retrieved evidence and matching manual units.")
+        st.markdown("**Retrieved evidence**")
+        st.write("These are the evidence windows pulled from transcripts for cycle-level fidelity or PI-question mode.")
 
 m1, m2, m3, m4 = st.columns(4)
 m1.metric("Cycle folders", len(cycle_ids))
@@ -329,12 +335,13 @@ m2.metric("Manual-session fidelity rows", len(session_fidelity_view.index))
 m3.metric("PI-question rows", len(answers_view.index))
 m4.metric("Evidence rows", len(evidence_view.index))
 
-tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(
-    ["Overview", "Fidelity", "PI Questions", "Evidence Browser", "Manual Units", "RAG Chat", "Summaries"]
+
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs(
+    ["Topic Map", "Fidelity", "PI Questions", "Evidence Browser", "Manual Units", "RAG Chat", "Summaries", "Visuals"]
 )
 
 with tab1:
-    st.subheader("Pipeline overview")
+    st.subheader("Topic map by session")
     render_key()
 
     st.markdown("**Topic map by session**")
@@ -365,31 +372,7 @@ with tab1:
             hide_index=True,
         )
 
-    st.markdown("**Cycle-level manual-session fidelity across current filters**")
-    if session_fidelity_view.empty:
-        st.info("No fidelity outputs match the current filters yet.")
-    else:
-        fidelity_chart = session_fidelity_view.copy()
-        fidelity_chart["adherence_score"] = pd.to_numeric(fidelity_chart["adherence_score"], errors="coerce").fillna(0)
-        st.bar_chart(fidelity_chart.groupby("manual_session_label")["adherence_score"].mean().sort_values(ascending=False))
-        overview_cols = [
-            "cycle_id",
-            "manual_session_num",
-            "manual_session_label",
-            "retrieved_evidence_count",
-            "manual_unit_coverage",
-            "subsection_coverage",
-            "evidence_density",
-            "adherence_score",
-            "adherence_label",
-            "adjudication_label",
-            "adjudication_confidence",
-        ]
-        st.dataframe(
-            add_readable_columns(session_fidelity_view[[col for col in overview_cols if col in session_fidelity_view.columns]]),
-            use_container_width=True,
-            hide_index=True,
-        )
+    
 
 with tab2:
     st.subheader("Cycle-level manual-session fidelity")
@@ -801,9 +784,9 @@ with tab4:
                 display_df["session_num"] = display_df["manual_session_num"].astype(str)
                 cols_to_show = ["session_num" if c == "manual_session_num" else c for c in cols_to_show]
 
-            missing = [c for c in desired_cols if c not in cols_to_show]
-            if missing:
-                st.warning(f"Some expected columns are missing and will be hidden: {missing}")
+            #missing = [c for c in desired_cols if c not in cols_to_show]
+            #if missing:
+                #st.warning(f"Some expected columns are missing and will be hidden: {missing}")
 
             st.dataframe(
                 add_readable_columns(display_df[cols_to_show]),
@@ -943,6 +926,12 @@ with tab6:
                 value=chat_defaults["include_manual"],
                 help="When on, retrieval can return manual sections alongside transcript evidence. When off, results are transcript-only.",
             )
+            # Minimal manual-only option (no fallback): retrieve and then summarize using only manual chunks
+            chat_manual_only = c2.checkbox(
+                "Manual-only retrieval (no fallback)",
+                value=False,
+                help="When on, the app will retrieve evidence but synthesize the answer only from manual chunks (no transcript fallback).",
+            )
 
             c3, c4, c5 = st.columns(3)
             chat_weight_doc = c3.number_input("Document weight", min_value=0.0, max_value=2.0, value=float(chat_defaults["weight_doc"]), step=0.1)
@@ -952,30 +941,251 @@ with tab6:
                 value=chat_defaults["answer_with_model"],
                 help="When on, the app sends the retrieved evidence to the model for a grounded answer. When off, the app only shows retrieved evidence.",
             )
+            # Prompt variant selector: default | PI question | Fidelity adjudication
+            c6, _ = st.columns([1, 2])
+            prompt_variant = c6.selectbox(
+                "Prompt variant",
+                ["default", "pi_question", "fidelity"],
+                index=0,
+                help="Choose the prompt style sent to the model: default QA, PI question style, or fidelity adjudication style.",
+            )
 
+        preview_prompt = st.form_submit_button("Preview prompt")
         submit_chat = st.form_submit_button("Run RAG chat")
 
-    if submit_chat:
-        if not question.strip():
-            st.warning("Enter a question first.")
-        else:
-            try:
-                with st.spinner("Running retrieval and preparing results..."):
-                    payload = run_chat_query(
-                        question=question.strip(),
-                        cycle_id="" if chat_cycle_option == "All cycles" else chat_cycle_option,
-                        topk=int(chat_topk),
-                        weight_doc=float(chat_weight_doc),
-                        weight_topic=float(chat_weight_topic),
-                        include_manual=chat_include_manual,
-                        answer_with_model=chat_answer_with_model,
-                    )
-                st.session_state["rag_chat_payload"] = payload
-                st.session_state["rag_chat_error"] = ""
-            except Exception as exc:
-                st.error("RAG chat query failed.")
-                st.code(str(exc))
-                st.session_state["rag_chat_error"] = str(exc)
+        if preview_prompt:
+            if not question.strip():
+                st.warning("Enter a question first to preview the prompt.")
+            else:
+                try:
+                    with st.spinner("Building prompt preview (no model call)..."):
+                        # Prepare a manual_units payload. For fidelity prompts prefer the
+                        # canonical selector used by run_cycle_analysis so the UI prompt
+                        # matches batch runs: get_manual_units_for_session(session, topic).
+                        if prompt_variant == "fidelity":
+                            # Map UI selections to selector args (empty string means no filter)
+                            session_arg = "" if selected_session == "All sessions" else str(selected_session)
+                            topic_arg = "" if selected_topic == "All topics" else str(selected_topic)
+                            try:
+                                manual_units_payload = get_manual_units_for_session(session_arg, topic_id=topic_arg) or []
+                            except Exception:
+                                # Fallback to the prior DataFrame-based filtering if selector fails
+                                manual_units_payload = manual_units.copy()
+                                if selected_session != "All sessions" and "manual_week" in manual_units_payload.columns:
+                                    manual_units_payload = manual_units_payload[manual_units_payload["manual_week"].astype(str) == selected_session]
+                                if selected_topic != "All topics" and "topic_id" in manual_units_payload.columns:
+                                    manual_units_payload = manual_units_payload[manual_units_payload["topic_id"].astype(str) == selected_topic]
+                        else:
+                            manual_units_payload = manual_units.copy()
+
+                        # Normalize to list-of-dicts for downstream callers
+                        if isinstance(manual_units_payload, pd.DataFrame):
+                            manual_units_payload = manual_units_payload.to_dict(orient="records")
+                        else:
+                            manual_units_payload = list(manual_units_payload or [])
+
+                        # Perform retrieval to get evidence, but don't call the model.
+                        # For the preview path we guard against failures in the retrieval
+                        # pipeline (or absence of indexes) by falling back to a
+                        # lightweight manual-only "retrieved" list built from the
+                        # selected manual units. This ensures the prompt builder can
+                        # always run in the UI without external dependencies.
+                        retrieved = []
+                        try:
+                            retrieval_payload = run_chat_query(
+                                question=question.strip(),
+                                cycle_id="" if chat_cycle_option == "All cycles" else chat_cycle_option,
+                                topk=int(chat_topk),
+                                weight_doc=float(chat_weight_doc),
+                                weight_topic=float(chat_weight_topic),
+                                include_manual=chat_include_manual or chat_manual_only,
+                                manual_only=chat_manual_only,
+                                answer_with_model=False,
+                                manual_units=manual_units_payload,
+                                prompt_variant=prompt_variant,
+                            )
+
+                            retrieved = retrieval_payload.get("evidence", []) or []
+                            if chat_manual_only:
+                                retrieved = [r for r in retrieved if str(r.get("source_type", "")).lower() == "manual"]
+                        except Exception:
+                            # Fallback: construct a minimal retrieved list from the
+                            # manual units payload so build_chat_prompt has something
+                            # realistic to format. Limit the number of manual units
+                            # included in the preview to avoid huge prompts.
+                            try:
+                                preview_limit = get_int("prompting", "ui_preview_manual_limit", 12)
+                            except Exception:
+                                preview_limit = 12
+
+                            if manual_units_payload:
+                                # manual_units_payload may be a DataFrame or list; ensure list
+                                mus = manual_units_payload if isinstance(manual_units_payload, list) else list(manual_units_payload)
+                                retrieved = []
+                                for i, mu in enumerate(mus[:preview_limit]):
+                                    # Try common manual unit text fields, fall back to str(mu)
+                                    text = mu.get("manual_text_short") or mu.get("manual_text") or mu.get("manual_excerpt") or ""
+                                    retrieved.append(
+                                        {
+                                            "rank": i + 1,
+                                            "source_type": "manual",
+                                            "cycle_id": mu.get("cycle_id", "") if isinstance(mu, dict) else "",
+                                            "session_id": mu.get("manual_week", mu.get("manual_section", "")) if isinstance(mu, dict) else "",
+                                            "manual_unit_id_best_match": mu.get("manual_unit_id") if isinstance(mu, dict) else "",
+                                            "manual_unit_match_score": "",
+                                            "text": (text[:UI_EXCERPT_CHARS] if isinstance(text, str) else str(text)),
+                                        }
+                                    )
+
+                        # Build the prompt locally using the chosen variant
+                        prompt_preview = build_chat_prompt(
+                            question.strip(),
+                            retrieved,
+                            variant=prompt_variant,
+                        )
+                        st.session_state["rag_chat_prompt_preview"] = prompt_preview
+                        st.session_state["rag_chat_preview_evidence"] = retrieved
+                except Exception as exc:
+                    st.error("Prompt preview failed.")
+                    st.code(str(exc))
+                    st.session_state["rag_chat_error"] = str(exc)
+
+        if submit_chat:
+            if not question.strip():
+                st.warning("Enter a question first.")
+            else:
+                # If user chose manual-only, perform retrieval (include_manual=True) without model answering,
+                # filter to manual evidence rows client-side, then synthesize an answer using only those manual rows.
+                if chat_manual_only:
+                    try:
+                        with st.spinner("Running manual-only retrieval..."):
+                            # Prefer canonical selector for fidelity prompts
+                            if prompt_variant == "fidelity":
+                                session_arg = "" if selected_session == "All sessions" else str(selected_session)
+                                topic_arg = "" if selected_topic == "All topics" else str(selected_topic)
+                                try:
+                                    manual_units_payload = get_manual_units_for_session(session_arg, topic_id=topic_arg) or []
+                                except Exception:
+                                    manual_units_payload = manual_units.copy()
+                                    if selected_session != "All sessions" and "manual_week" in manual_units_payload.columns:
+                                        manual_units_payload = manual_units_payload[manual_units_payload["manual_week"].astype(str) == selected_session]
+                                    if selected_topic != "All topics" and "topic_id" in manual_units_payload.columns:
+                                        manual_units_payload = manual_units_payload[manual_units_payload["topic_id"].astype(str) == selected_topic]
+                            else:
+                                manual_units_payload = manual_units.copy()
+
+                            if isinstance(manual_units_payload, pd.DataFrame):
+                                manual_units_payload = manual_units_payload.to_dict(orient="records")
+                            else:
+                                manual_units_payload = list(manual_units_payload or [])
+
+                            retrieval_payload = run_chat_query(
+                                question=question.strip(),
+                                cycle_id="" if chat_cycle_option == "All cycles" else chat_cycle_option,
+                                topk=int(chat_topk),
+                                weight_doc=float(chat_weight_doc),
+                                weight_topic=float(chat_weight_topic),
+                                include_manual=True,
+                                manual_only=chat_manual_only,
+                                answer_with_model=False,
+                                manual_units=manual_units_payload,
+                                prompt_variant=prompt_variant,
+                            )
+
+                        # Filter retrieved evidence to only manual chunks (require explicit source_type == 'manual').
+                        # We no longer accept inferred matches on transcript rows here to avoid transcript fallback.
+                        retrieved = retrieval_payload.get("evidence", []) or []
+                        manual_evidence = [r for r in retrieved if str(r.get("source_type", "")).lower() == "manual"]
+
+                        # Always call the model on the manual evidence (even if the filtered
+                        # manual_evidence list is empty). This keeps manual-only mode
+                        # deterministic: the model is always asked to synthesize from the
+                        # manual chunks selected by the filter.
+                        try:
+                            st.info(f"Manual evidence rows found: {len(manual_evidence)}. Calling model...")
+                            prompt_text = build_chat_prompt(
+                                question.strip(),
+                                manual_evidence,
+                                variant=prompt_variant,
+                            )
+                            raw = ""
+                            try:
+                                model_name = get_str("ollama", "default_model", "gpt-oss:120b")
+                                raw = call_ollama(prompt_text, model_name)
+                                answer_payload = parse_json_response(raw)
+                            except Exception as exc:
+                                st.error("Model call failed for manual-only summarization.")
+                                st.code(str(exc))
+                                st.session_state["rag_chat_error"] = str(exc)
+                                answer_payload = {}
+
+                            payload = {
+                                "question": question,
+                                "cycle_id": "" if chat_cycle_option == "All cycles" else chat_cycle_option,
+                                "topk": int(chat_topk),
+                                "weight_doc": float(chat_weight_doc),
+                                "weight_topic": float(chat_weight_topic),
+                                "include_manual": True,
+                                "answer_with_model": True,
+                                "prompt_variant": prompt_variant,
+                                "prompt_text": prompt_text,
+                                "raw_model_output": raw,
+                                "fallback_to_transcript": False,
+                                "answer": answer_payload,
+                                "evidence": manual_evidence,
+                            }
+                            st.session_state["rag_chat_payload"] = payload
+                            # clear any prior error if call succeeded (or we handled it)
+                            st.session_state["rag_chat_error"] = st.session_state.get("rag_chat_error", "")
+                        except Exception as exc:
+                            st.error("Manual-only retrieval failed.")
+                            st.code(str(exc))
+                            st.session_state["rag_chat_error"] = str(exc)
+                    except Exception as exc:
+                        st.error("Manual-only retrieval failed.")
+                        st.code(str(exc))
+                        st.session_state["rag_chat_error"] = str(exc)
+                else:
+                    try:
+                        with st.spinner("Running retrieval and preparing results..."):
+                            # Prefer canonical selector for fidelity prompts
+                            if prompt_variant == "fidelity":
+                                session_arg = "" if selected_session == "All sessions" else str(selected_session)
+                                topic_arg = "" if selected_topic == "All topics" else str(selected_topic)
+                                try:
+                                    manual_units_payload = get_manual_units_for_session(session_arg, topic_id=topic_arg) or []
+                                except Exception:
+                                    manual_units_payload = manual_units.copy()
+                                    if selected_session != "All sessions" and "manual_week" in manual_units_payload.columns:
+                                        manual_units_payload = manual_units_payload[manual_units_payload["manual_week"].astype(str) == selected_session]
+                                    if selected_topic != "All topics" and "topic_id" in manual_units_payload.columns:
+                                        manual_units_payload = manual_units_payload[manual_units_payload["topic_id"].astype(str) == selected_topic]
+                            else:
+                                manual_units_payload = manual_units.copy()
+
+                            if isinstance(manual_units_payload, pd.DataFrame):
+                                manual_units_payload = manual_units_payload.to_dict(orient="records")
+                            else:
+                                manual_units_payload = list(manual_units_payload or [])
+
+                            payload = run_chat_query(
+                                question=question.strip(),
+                                cycle_id="" if chat_cycle_option == "All cycles" else chat_cycle_option,
+                                topk=int(chat_topk),
+                                weight_doc=float(chat_weight_doc),
+                                weight_topic=float(chat_weight_topic),
+                                include_manual=chat_include_manual,
+                                manual_only=chat_manual_only,
+                                answer_with_model=chat_answer_with_model,
+                                    prompt_variant=prompt_variant,
+                                    manual_units=manual_units_payload,
+                            )
+                        st.session_state["rag_chat_payload"] = payload
+                        st.session_state["rag_chat_error"] = ""
+                    except Exception as exc:
+                        st.error("RAG chat query failed.")
+                        st.code(str(exc))
+                        st.session_state["rag_chat_error"] = str(exc)
 
     payload = st.session_state.get("rag_chat_payload")
     chat_error = st.session_state.get("rag_chat_error", "")
@@ -983,8 +1193,8 @@ with tab6:
         with st.expander("Last chat error", expanded=False):
             st.code(chat_error)
     if payload:
-        st.markdown("**Query used**")
-        st.code(str(payload.get("question", "")))
+        with st.expander("Query used", expanded=False):
+            st.code(str(payload.get("question", "")))
         mode_col1, mode_col2, mode_col3 = st.columns(3)
         mode_col1.metric("Search scope", "Transcript + manual" if payload.get("include_manual") else "Transcript only")
         mode_col2.metric("Output mode", "Grounded model answer" if payload.get("answer_with_model") else "Evidence only")
@@ -999,20 +1209,100 @@ with tab6:
             manual_ids = answer.get("manual_unit_ids", [])
             m3.metric("Manual units", ", ".join(manual_ids) if manual_ids else "None")
 
-            st.markdown("**Grounded answer**")
-            st.write(str(answer.get("answer_summary", "")) or "No answer returned.")
+            # Show the session number the model returned (or the fallback value)
+            session_number = answer.get("session_number")
+            if session_number is None:
+                session_display = "N/A"
+            else:
+                try:
+                    # normalize numeric sessions and sentinel -1 as unknown
+                    sn = int(session_number)
+                    session_display = "unknown" if sn == -1 else str(sn)
+                except Exception:
+                    session_display = str(session_number)
 
-            st.markdown("**Full model prompt**")
-            st.code(str(payload.get("prompt_text", "")))
+            s1, s2, s3 = st.columns(3)
+            s1.metric("Session (model)", session_display)
+            # If the answer payload includes an explicit inferred flag or explanation, show it
+            inferred_flag = answer.get("session_inferred") or answer.get("session_number_inferred")
+            if inferred_flag:
+                s1.caption("Session inferred from evidence (fallback)")
+            else:
+                # fallback: surface any confidence explanation text if present
+                conf_expl = answer.get("confidence_explanation") or answer.get("explanation")
+                if conf_expl:
+                    s1.caption(str(conf_expl))
+
+            # Show session_explanation (if provided) in a collapsible area
+            sess_expl = answer.get("session_explanation")
+            if sess_expl:
+                with st.expander("How session was chosen", expanded=False):
+                    st.write(str(sess_expl))
+
+            st.markdown("**Grounded answer**")
+            # Backwards-compat fallback: some saved runs store the model text under
+            # `adjudication_summary` instead of `answer_summary`. Prefer the
+            # canonical `answer_summary` but fall back to `adjudication_summary`.
+            display_text = answer.get("answer_summary") or answer.get("adjudication_summary")
+            st.write(str(display_text) or "No answer returned.")
+
+            with st.expander("Full model prompt", expanded=False):
+                st.code(str(payload.get("prompt_text", "")))
         else:
             st.info("This run used evidence-only mode. The app searched the index and returned retrieved evidence, but it did not send that evidence to gpt-oss:120b for an answer.")
 
         evidence_rows = payload.get("evidence", []) or []
         st.markdown("**Retrieved evidence**")
+
+        # Enrich evidence rows with a human-friendly manual-session value when possible.
         if evidence_rows:
+            try:
+                # determine which column in manual_units corresponds to a session label
+                manual_session_col = None
+                for c in ["manual_section", "manual_week", "manual_session", "manual_session_label"]:
+                    if c in manual_units.columns:
+                        manual_session_col = c
+                        break
+
+                if manual_session_col and "manual_unit_id_best_match" in pd.DataFrame(evidence_rows).columns:
+                    mapping = {str(k): str(v) for k, v in zip(manual_units.get("manual_unit_id", []), manual_units[manual_session_col])}
+                    for r in evidence_rows:
+                        mid = str(r.get("manual_unit_id_best_match", "") or "")
+                        r["manual_session"] = mapping.get(mid, "")
+                else:
+                    for r in evidence_rows:
+                        r["manual_session"] = ""
+            except Exception:
+                # Fall back to silently not providing manual_session if anything goes wrong
+                for r in evidence_rows:
+                    r.setdefault("manual_session", "")
+
+            # Provide download/save controls for the payload
+            try:
+                json_bytes = json.dumps(payload, indent=2).encode("utf-8")
+            except Exception:
+                json_bytes = str(payload).encode("utf-8")
+
+            cdl, cds = st.columns([1, 1])
+            with cdl:
+                st.download_button("Download result JSON", data=json_bytes, file_name=f"rag_chat_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.json")
+            with cds:
+                if st.button("Save result to server"):
+                    out_dir = CYCLE_ANALYSIS_DIR / "rag_chat_outputs"
+                    out_dir.mkdir(parents=True, exist_ok=True)
+                    fname = f"rag_chat_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.json"
+                    path = out_dir / fname
+                    try:
+                        path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+                        st.success(f"Saved to {path}")
+                    except Exception as exc:
+                        st.error(f"Failed to save: {exc}")
+
             evidence_df = pd.DataFrame(evidence_rows)
             if "text" in evidence_df.columns:
                 evidence_df["text"] = evidence_df["text"].astype(str).apply(get_excerpt)
+
+            # Include manual_session in the displayed columns when present
             display_cols = [
                 col
                 for col in [
@@ -1020,6 +1310,7 @@ with tab6:
                     "source_type",
                     "cycle_id",
                     "session_id",
+                    "manual_session",
                     "score_combined",
                     "score_doc",
                     "score_topic",
@@ -1029,6 +1320,7 @@ with tab6:
                 ]
                 if col in evidence_df.columns
             ]
+
             st.dataframe(add_readable_columns(evidence_df[display_cols]), use_container_width=True, hide_index=True)
 
             for idx, row in enumerate(evidence_rows, start=1):
@@ -1036,6 +1328,7 @@ with tab6:
                 with st.expander(title, expanded=False):
                     st.write(f"Cycle: {row.get('cycle_id','')}")
                     st.write(f"Session: {row.get('session_id','')}")
+                    st.write(f"Manual session: {row.get('manual_session','')}")
                     st.write(f"Manual unit: {row.get('manual_unit_id_best_match','')}")
                     st.write(f"Manual-unit similarity: {row.get('manual_unit_match_score','')}")
                     st.write(str(row.get("text", "")))
@@ -1050,32 +1343,26 @@ with tab6:
         if not summary_dir.exists():
             st.info("No summary folder found yet. Run the aggregator first.")
         else:
-            # Only show files that are produced by scripts/aggregate_cycle_outputs.py
-            expected = [
-                "table_session_topic_fidelity.csv",
-                "table_cycle_manual_session_fidelity.csv",
-                "table_pi_question_answers.csv",
-                "table_topic_evidence.csv",
-                "table_cycle_manual_session_evidence.csv",
-                "summary_fidelity_by_cycle.csv",
-                "summary_fidelity_by_topic.csv",
-                "summary_session_fidelity_by_cycle.csv",
-                "summary_session_fidelity_by_manual_session.csv",
-                "summary_pi_questions_by_cycle.csv",
-                "summary_pi_questions_by_type.csv",
-                "summary_pi_questions_by_topic.csv",
-                "summary_pi_questions_by_cycle_and_topic.csv",
-                "summary_pi_questions_by_cycle_and_type.csv",
-                "summary_evidence_by_cycle.csv",
-                "summary_adjudication_by_cycle.csv",
-                "summary_adjudication_confidence_by_cycle.csv",
-                "summary_adjudication_by_cycle_session.csv",
-                "summary_adjudication_confidence_by_cycle_session.csv",
-            ]
-            files = [f for f in expected if (summary_dir / f).exists()]
-            if not files:
+            # Grouped summary folders for clearer UX
+            fidelity_dir = summary_dir / "fidelity"
+            pi_dir = summary_dir / "pi_questions"
+
+            fidelity_files = sorted([p.name for p in fidelity_dir.iterdir() if p.is_file()]) if fidelity_dir.exists() else []
+            pi_files = sorted([p.name for p in pi_dir.iterdir() if p.is_file()]) if pi_dir.exists() else []
+            # fallback: root-level files (for backward compatibility)
+            root_files = sorted([p.name for p in summary_dir.iterdir() if p.is_file()])
+
+            if not fidelity_files and not pi_files and not root_files:
                 st.info("No aggregator-generated CSV summary files found in the summary folder.")
             else:
+                group_choice = st.radio("Summary group", ["Fidelity", "PI questions", "All (flat)"], index=0)
+                if group_choice == "Fidelity":
+                    files = fidelity_files or root_files
+                elif group_choice == "PI questions":
+                    files = pi_files or root_files
+                else:
+                    files = root_files
+
                 chosen = st.selectbox("Choose summary file", files)
                 path = summary_dir / chosen
                 df = load_csv(path)
@@ -1086,129 +1373,392 @@ with tab6:
                     st.markdown(f"**Preview: {chosen}**")
                     st.dataframe(display, use_container_width=True)
 
+                    # Altair-powered plotting: let user pick X and Y axes and plot type.
+                    cols_all = [c for c in df.columns]
                     numeric_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
-                    if numeric_cols:
-                        col = st.selectbox("Plot numeric column", ["None"] + numeric_cols)
-                        if col and col != "None":
-                            agg_by = "cycle_id" if "cycle_id" in df.columns else None
-                            if agg_by:
-                                chart_df = df.groupby(agg_by)[col].mean().reset_index()
-                                st.bar_chart(chart_df.set_index(agg_by))
+                    x_choice = st.selectbox("X axis (optional)", ["None"] + cols_all, index=0)
+                    y_choice = st.selectbox("Y axis (numeric)", ["None"] + numeric_cols, index=0)
+                    plot_type = st.selectbox("Plot type", ["auto", "bar", "line", "scatter", "box"])
+                    agg_func = st.selectbox("Aggregation (when X is categorical)", ["mean", "median", "sum", "count"], index=0)
+
+                    def aggregate(df_local, xcol, ycol, agg):
+                        if agg == "count":
+                            return df_local.groupby(xcol).size().reset_index(name="count")
+                        if agg == "sum":
+                            return df_local.groupby(xcol)[ycol].sum().reset_index()
+                        if agg == "median":
+                            return df_local.groupby(xcol)[ycol].median().reset_index()
+                        return df_local.groupby(xcol)[ycol].mean().reset_index()
+
+                    if y_choice and y_choice != "None":
+                        # prepare DataFrame view for Altair
+                        vis_df = df.copy()
+                        # Drop rows with missing Y
+                        vis_df = vis_df[pd.notna(vis_df[y_choice])]
+
+                        if x_choice and x_choice != "None":
+                            # If X is non-numeric, aggregate and use bar/box by default
+                            if not pd.api.types.is_numeric_dtype(vis_df[x_choice]):
+                                agg_df = aggregate(vis_df, x_choice, y_choice, agg_func)
+                                if plot_type in ["auto", "bar"]:
+                                    chart = alt.Chart(agg_df).mark_bar().encode(x=alt.X(x_choice, type="nominal"), y=alt.Y(y_choice if agg_func != "count" else "count", type="quantitative"), tooltip=list(agg_df.columns))
+                                elif plot_type == "box":
+                                    chart = alt.Chart(vis_df).mark_boxplot().encode(x=alt.X(x_choice, type="nominal"), y=alt.Y(y_choice, type="quantitative"), tooltip=[x_choice, y_choice])
+                                elif plot_type == "scatter":
+                                    chart = alt.Chart(agg_df).mark_point().encode(x=alt.X(x_choice, type="nominal"), y=alt.Y(y_choice if agg_func != "count" else "count", type="quantitative"), tooltip=list(agg_df.columns))
+                                else:
+                                    chart = alt.Chart(agg_df).mark_bar().encode(x=alt.X(x_choice, type="nominal"), y=alt.Y(y_choice if agg_func != "count" else "count", type="quantitative"), tooltip=list(agg_df.columns))
                             else:
-                                st.line_chart(df[col])
+                                # X is numeric: plot relationship between numeric X and numeric Y
+                                if plot_type in ["auto", "scatter"]:
+                                    chart = alt.Chart(vis_df).mark_point().encode(x=alt.X(x_choice, type="quantitative"), y=alt.Y(y_choice, type="quantitative"), tooltip=[x_choice, y_choice])
+                                elif plot_type == "line":
+                                    chart = alt.Chart(vis_df).mark_line().encode(x=alt.X(x_choice, type="quantitative"), y=alt.Y(y_choice, type="quantitative"), tooltip=[x_choice, y_choice])
+                                else:
+                                    # fallback to scatter
+                                    chart = alt.Chart(vis_df).mark_point().encode(x=alt.X(x_choice, type="quantitative"), y=alt.Y(y_choice, type="quantitative"), tooltip=[x_choice, y_choice])
+                        else:
+                            # No X chosen: if cycle_id present, aggregate by cycle; else plot Y over index
+                            if "cycle_id" in df.columns:
+                                agg_df = aggregate(vis_df, "cycle_id", y_choice, agg_func)
+                                chart = alt.Chart(agg_df).mark_bar().encode(x=alt.X("cycle_id", type="nominal"), y=alt.Y(y_choice if agg_func != "count" else "count", type="quantitative"), tooltip=list(agg_df.columns))
+                            else:
+                                chart = alt.Chart(vis_df.reset_index()).mark_line().encode(x=alt.X("index", type="quantitative"), y=alt.Y(y_choice, type="quantitative"), tooltip=[y_choice, "index"]) 
+
+                        st.altair_chart(chart, use_container_width=True)
 
                     with open(path, "rb") as fh:
                         st.download_button(label="Download CSV", data=fh, file_name=chosen)
-                    # Notebook visuals: replicate the notebook's plots here.
-                    st.divider()
-                    with st.expander("Show notebook visuals", expanded=False):
-                        import matplotlib.pyplot as plt
-                        import seaborn as sns
+                    # Notebook visuals have been removed; keep aggregated CSV preview and Altair plotting above.
+                    # Removed session fidelity images per user request.
 
-                        # adjudication by cycle (generation grade) - use session-level file to match notebook
-                        p_adjud = summary_dir / "summary_adjudication_by_cycle_session.csv"
-                        if p_adjud.exists():
-                            df_adjud = load_csv(p_adjud)
-                            if not df_adjud.empty:
-                                df = df_adjud.sort_values("cycle_id")
-                                cols = [c for c in ["pct_adjud_high", "pct_adjud_moderate", "pct_adjud_low"] if c in df.columns]
-                                if cols:
-                                    fig, ax = plt.subplots(figsize=(10, 4))
-                                    df_plot = df.set_index("cycle_id")[cols]
-                                    df_plot.plot(kind="bar", stacked=True, ax=ax, colormap="tab20")
-                                    ax.set_ylabel("Percent")
-                                    ax.set_title("Generation grade distribution by cycle (session-level)")
-                                    st.pyplot(fig)
-                                else:
-                                    st.info("Adjudication columns not found in summary_adjudication_by_cycle_session.csv")
+with tab8:
+    st.subheader("Visuals")
+    st.caption("Manual Adherence and LLM Question Summary metrics")
 
-                        # adjudication confidence by cycle - use session-level file to match notebook
-                        p_conf = summary_dir / "summary_adjudication_confidence_by_cycle_session.csv"
-                        if p_conf.exists():
-                            df_conf = load_csv(p_conf)
-                            if not df_conf.empty:
-                                df = df_conf.sort_values("cycle_id")
-                                cols = [c for c in ["pct_conf_high", "pct_conf_medium", "pct_conf_low"] if c in df.columns]
-                                if cols:
-                                    fig, ax = plt.subplots(figsize=(10, 4))
-                                    df_plot = df.set_index("cycle_id")[cols]
-                                    df_plot.plot(kind="bar", stacked=True, ax=ax, colormap="viridis")
-                                    ax.set_ylabel("Percent")
-                                    ax.set_title("Adjudication confidence distribution by cycle (session-level)")
-                                    st.pyplot(fig)
-                                else:
-                                    st.info("Adjudication confidence columns not found in summary_adjudication_confidence_by_cycle_session.csv")
+    # Fidelity cards
+    st.markdown("### Manual Adherence (Fidelity) summary")
 
-                        # evidence rows by cycle
-                        p_evidence = summary_dir / "summary_evidence_by_cycle.csv"
-                        if p_evidence.exists():
-                            df_ev = load_csv(p_evidence)
-                            if not df_ev.empty and "evidence_rows" in df_ev.columns:
-                                fig, ax = plt.subplots(figsize=(8, 3))
-                                df_plot = df_ev.sort_values("cycle_id").set_index("cycle_id")
-                                df_plot["evidence_rows"].plot(kind="bar", color="steelblue", ax=ax)
-                                ax.set_ylabel("Evidence rows")
-                                ax.set_title("Evidence rows by cycle")
-                                st.pyplot(fig)
+    st.markdown("**Mean Adherence Score across cycles**")
+    if session_fidelity_view.empty:
+        st.info("No fidelity outputs match the current filters yet.")
+    else:
+        fidelity_chart = session_fidelity_view.copy()
+        fidelity_chart["adherence_score"] = pd.to_numeric(fidelity_chart["adherence_score"], errors="coerce").fillna(0)
+        st.bar_chart(fidelity_chart.groupby("manual_session_label")["adherence_score"].mean().sort_values(ascending=False))
+        overview_cols = [
+            "cycle_id",
+            "manual_session_num",
+            "manual_session_label",
+            "retrieved_evidence_count",
+            "manual_unit_coverage",
+            "subsection_coverage",
+            "evidence_density",
+            "adherence_score",
+            "adherence_label",
+            "adjudication_label",
+            "adjudication_confidence",
+        ]
+        
+    
+    st.markdown("**Adjudication Percent (LLM Generation Grades) across cycles**")
+    # Load adjudication summary (preferred grouped folder, fallback to root)
+    summary_root = CYCLE_ANALYSIS_DIR / "summary"
+    adjud_group = summary_root / "fidelity" / "summary_adjudication_by_cycle_session.csv"
+    adjud_root = summary_root / "summary_adjudication_by_cycle_session.csv"
+    adjud_path = adjud_group if adjud_group.exists() else adjud_root
+    df_adjud = load_csv(adjud_path) if adjud_path.exists() else pd.DataFrame()
 
-                        # PI answer confidence distribution by cycle
-                        p_pi = summary_dir / "summary_pi_questions_by_cycle.csv"
-                        if p_pi.exists():
-                            df_pi = load_csv(p_pi)
-                            if not df_pi.empty:
-                                df_plot = df_pi.sort_values("cycle_id")
-                                cols = [c for c in ["pct_confidence_high", "pct_confidence_medium", "pct_confidence_low"] if c in df_plot.columns]
-                                if cols:
-                                    fig, ax = plt.subplots(figsize=(10, 4))
-                                    df_plot.set_index("cycle_id")[cols].plot(kind="bar", stacked=True, ax=ax)
-                                    ax.set_ylabel("Percent")
-                                    ax.set_title("PI answer confidence distribution by cycle")
-                                    st.pyplot(fig)
+    if df_adjud.empty:
+        st.info("No adjudication summary found; run the aggregator to produce summary_adjudication_by_cycle_session.csv")
+    else:
+        # Expect columns: cycle_id, rows, pct_adjud_high, pct_adjud_moderate, pct_adjud_low
+        pct_cols = [c for c in ["pct_adjud_high", "pct_adjud_moderate", "pct_adjud_low"] if c in df_adjud.columns]
+        if pct_cols and "cycle_id" in df_adjud.columns:
+            df_plot = df_adjud.copy()
+            # Ensure numeric
+            for c in pct_cols:
+                df_plot[c] = pd.to_numeric(df_plot[c], errors="coerce").fillna(0)
+            dfm = pd.melt(df_plot, id_vars=["cycle_id"], value_vars=pct_cols, var_name="confidence", value_name="pct")
+            dfm["confidence"] = dfm["confidence"].map({"pct_adjud_high": "High", "pct_adjud_moderate": "Moderate", "pct_adjud_low": "Low"}).fillna(dfm["confidence"])
+            try:
+                chart = alt.Chart(dfm).mark_bar().encode(
+                    x=alt.X("cycle_id:N", title="Cycle"),
+                    y=alt.Y("pct:Q", title="Percent"),
+                    color=alt.Color("confidence:N", title="Adjudication"),
+                    order=alt.Order("confidence", sort="descending"),
+                    tooltip=["cycle_id", "confidence", "pct"],
+                ).properties(height=320)
+                st.altair_chart(chart, use_container_width=True)
+            except Exception:
+                st.info("Unable to render adjudication stacked chart for the current data.")
+        else:
+            st.info("Adjudication percent columns not found in summary file.")
+    
+    st.markdown("**Adjudication Confidence Percent (LLM Generation Confidence) across current filters**")
+    # Load adjudication summary (preferred grouped folder, fallback to root)
+    summary_root = CYCLE_ANALYSIS_DIR / "summary"
+    adjud_conf_group = summary_root / "fidelity" / "summary_adjudication_confidence_by_cycle_session.csv"
+    adjud_conf_root = summary_root / "summary_adjudication_confidence_by_cycle_session.csv"
+    adjud_conf_path = adjud_conf_group if adjud_conf_group.exists() else adjud_conf_root
+    df_adjud_conf = load_csv(adjud_conf_path) if adjud_conf_path.exists() else pd.DataFrame()
 
-                        # Session fidelity visuals (cycle and manual session)
-                        path_cycle = summary_dir / "summary_session_fidelity_by_cycle.csv"
-                        path_manual = summary_dir / "summary_session_fidelity_by_manual_session.csv"
+    if df_adjud_conf.empty:
+        st.info("No adjudication summary found; run the aggregator to produce summary_adjudication_confidence_by_cycle_session.csv")
+    else:
+        # Expect columns: cycle_id, rows, pct_conf_high, pct_conf_medium, pct_conf_low
+        pct_cols = [c for c in ["pct_conf_high", "pct_conf_medium", "pct_conf_low"] if c in df_adjud_conf.columns]
+        if pct_cols and "cycle_id" in df_adjud_conf.columns:
+            df_plot = df_adjud_conf.copy()
+            # Ensure numeric
+            for c in pct_cols:
+                df_plot[c] = pd.to_numeric(df_plot[c], errors="coerce").fillna(0)
+            dfm = pd.melt(df_plot, id_vars=["cycle_id"], value_vars=pct_cols, var_name="confidence", value_name="pct")
+            dfm["confidence"] = dfm["confidence"].map({"pct_conf_high": "High", "pct_conf_medium": "Medium", "pct_conf_low": "Low"}).fillna(dfm["confidence"])
+            try:
+                chart = alt.Chart(dfm).mark_bar().encode(
+                    x=alt.X("cycle_id:N", title="Cycle"),
+                    y=alt.Y("pct:Q", title="Percent"),
+                    color=alt.Color("confidence:N", title="Adjudication confidence"),
+                    order=alt.Order("confidence", sort="descending"),
+                    tooltip=["cycle_id", "confidence", "pct"],
+                ).properties(height=320)
+                st.altair_chart(chart, use_container_width=True)
+            except Exception:
+                st.info("Unable to render adjudication-confidence stacked chart for the current data.")
+        else:
+            st.info("Adjudication confidence percent columns not found in summary file.")
 
-                        if path_cycle.exists():
-                            df_cycle = load_csv(path_cycle)
-                            if not df_cycle.empty:
-                                if "adherence_score" in df_cycle.columns:
-                                    df_cycle["adherence_score"] = pd.to_numeric(df_cycle["adherence_score"], errors="coerce")
-                                    ycol = "adherence_score"
-                                else:
-                                    num_cols = df_cycle.select_dtypes("number").columns.tolist()
-                                    ycol = num_cols[0] if num_cols else None
+    # Session-level adjudication (across cycles) by manual session
+    st.markdown("**Adjudication Percent by manual session (Generation Grades)**")
+    adjud_manual_group = summary_root / "fidelity" / "summary_adjudication_by_manual_session.csv"
+    adjud_manual_root = summary_root / "summary_adjudication_by_manual_session.csv"
+    adjud_manual_path = adjud_manual_group if adjud_manual_group.exists() else adjud_manual_root
+    df_adjud_manual = load_csv(adjud_manual_path) if adjud_manual_path.exists() else pd.DataFrame()
 
-                                if ycol:
-                                    fig, ax = plt.subplots(figsize=(10, 4))
-                                    if "cycle_id" in df_cycle.columns:
-                                        sns.barplot(data=df_cycle, x="cycle_id", y=ycol, ax=ax)
-                                        ax.set_xlabel("cycle_id")
-                                    else:
-                                        df_cycle[ycol].plot(kind="line", ax=ax)
-                                    ax.set_ylabel(ycol)
-                                    ax.set_title(f"Session fidelity by cycle — {ycol}")
-                                    st.pyplot(fig)
-                                else:
-                                    st.info("No numeric column found in summary_session_fidelity_by_cycle.csv to plot.")
+    if df_adjud_manual.empty:
+        st.info("No session-level adjudication summary found; run the aggregator to produce summary_adjudication_by_manual_session.csv")
+    else:
+        # Expect columns: manual_session_num, manual_session_label, rows, pct_adjud_high, pct_adjud_moderate, pct_adjud_low
+        name_col = "manual_session_label" if "manual_session_label" in df_adjud_manual.columns else ("manual_session_num" if "manual_session_num" in df_adjud_manual.columns else None)
+        pct_cols = [c for c in ["pct_adjud_high", "pct_adjud_moderate", "pct_adjud_low"] if c in df_adjud_manual.columns]
+        if pct_cols and name_col:
+            df_plot = df_adjud_manual.copy()
+            for c in pct_cols:
+                df_plot[c] = pd.to_numeric(df_plot[c], errors="coerce").fillna(0)
+            try:
+                dfm = pd.melt(df_plot, id_vars=[name_col], value_vars=pct_cols, var_name="adjudication", value_name="pct")
+                dfm["adjudication"] = dfm["adjudication"].map({"pct_adjud_high": "High", "pct_adjud_moderate": "Moderate", "pct_adjud_low": "Low"}).fillna(dfm["adjudication"])
+                chart = alt.Chart(dfm).mark_bar().encode(
+                    x=alt.X(f"{name_col}:N", title="Manual session"),
+                    y=alt.Y("pct:Q", title="Percent"),
+                    color=alt.Color("adjudication:N", title="Generation Grade"),
+                    order=alt.Order("adjudication", sort="descending"),
+                    tooltip=[name_col, "adjudication", "pct"],
+                ).properties(height=360)
+                st.altair_chart(chart, use_container_width=True)
+            except Exception:
+                st.info("Unable to render session-level adjudication chart for the current data.")
+        else:
+            st.info("Session-level adjudication columns not found in summary file.")
 
-                        if path_manual.exists():
-                            df_manual = load_csv(path_manual)
-                            if not df_manual.empty:
-                                num_cols = df_manual.select_dtypes("number").columns.tolist()
-                                preferred = [c for c in num_cols if "adher" in c.lower() or "score" in c.lower()]
-                                valcol = preferred[0] if preferred else (num_cols[0] if num_cols else None)
+    st.markdown("**Adjudication Confidence Percent by manual session**")
+    adjud_conf_manual_group = summary_root / "fidelity" / "summary_adjudication_confidence_by_manual_session.csv"
+    adjud_conf_manual_root = summary_root / "summary_adjudication_confidence_by_manual_session.csv"
+    adjud_conf_manual_path = adjud_conf_manual_group if adjud_conf_manual_group.exists() else adjud_conf_manual_root
+    df_adjud_conf_manual = load_csv(adjud_conf_manual_path) if adjud_conf_manual_path.exists() else pd.DataFrame()
 
-                                if valcol:
-                                    fig2, ax2 = plt.subplots(figsize=(12, 4))
-                                    xcol = "manual_session_num" if "manual_session_num" in df_manual.columns else ("manual_week" if "manual_week" in df_manual.columns else None)
-                                    if xcol:
-                                        sns.boxplot(data=df_manual, x=xcol, y=valcol, ax=ax2)
-                                        ax2.set_xlabel(xcol)
-                                    else:
-                                        sns.boxplot(y=df_manual[valcol], ax=ax2)
-                                    ax2.set_ylabel(valcol)
-                                    ax2.set_title(f"Fidelity ({valcol}) distribution by manual session")
-                                    st.pyplot(fig2)
-                                else:
-                                    st.info("No numeric column found in summary_session_fidelity_by_manual_session.csv to plot.")
+    if df_adjud_conf_manual.empty:
+        st.info("No session-level adjudication confidence summary found; run the aggregator to produce summary_adjudication_confidence_by_manual_session.csv")
+    else:
+        name_col = "manual_session_label" if "manual_session_label" in df_adjud_conf_manual.columns else ("manual_session_num" if "manual_session_num" in df_adjud_conf_manual.columns else None)
+        pct_cols = [c for c in ["pct_conf_high", "pct_conf_medium", "pct_conf_low"] if c in df_adjud_conf_manual.columns]
+        if pct_cols and name_col:
+            df_plot = df_adjud_conf_manual.copy()
+            for c in pct_cols:
+                df_plot[c] = pd.to_numeric(df_plot[c], errors="coerce").fillna(0)
+            try:
+                dfm = pd.melt(df_plot, id_vars=[name_col], value_vars=pct_cols, var_name="confidence", value_name="pct")
+                dfm["confidence"] = dfm["confidence"].map({"pct_conf_high": "High", "pct_conf_medium": "Medium", "pct_conf_low": "Low"}).fillna(dfm["confidence"])
+                chart = alt.Chart(dfm).mark_bar().encode(
+                    x=alt.X(f"{name_col}:N", title="Manual session"),
+                    y=alt.Y("pct:Q", title="Percent"),
+                    color=alt.Color("confidence:N", title="Adjudication confidence"),
+                    order=alt.Order("confidence", sort="descending"),
+                    tooltip=[name_col, "confidence", "pct"],
+                ).properties(height=360)
+                st.altair_chart(chart, use_container_width=True)
+            except Exception:
+                st.info("Unable to render session-level adjudication-confidence chart for the current data.")
+        else:
+            st.info("Session-level adjudication confidence columns not found in summary file.")
+
+    # Paths to grouped summary folders (preferred)
+    summary_root = CYCLE_ANALYSIS_DIR / "summary"
+    fidelity_dir = summary_root / "fidelity"
+    pi_dir = summary_root / "pi_questions"
+
+    # Load candidate files with fallback
+    def load_preferring(dirpath: Path, name: str):
+        p = dirpath / name
+        if p.exists():
+            return load_csv(p)
+        # fallback to root summary
+        pr = summary_root / name
+        return load_csv(pr) if pr.exists() else pd.DataFrame()
+
+    # Fidelity data
+    df_session_fid_cycle = load_preferring(fidelity_dir, "summary_session_fidelity_by_cycle.csv")
+    df_session_fid_manual = load_preferring(fidelity_dir, "summary_session_fidelity_by_manual_session.csv")
+
+    # PI data
+    df_pi_by_cycle = load_preferring(pi_dir, "summary_pi_questions_by_cycle.csv")
+    df_pi_by_topic = load_preferring(pi_dir, "summary_pi_questions_by_topic.csv")
+    df_pi_by_question = load_preferring(pi_dir, "summary_pi_questions_by_type.csv")
+    # by-cycle + topic breakdown
+    df_pi_by_cycle_topic = load_preferring(pi_dir, "summary_pi_questions_by_cycle_and_topic.csv")
+    # by-cycle + question/type breakdown
+    df_pi_by_cycle_question = load_preferring(pi_dir, "summary_pi_questions_by_cycle_and_type.csv")
+
+    
+    # PI cards
+    st.markdown("### LLM Summaries of PI Questions")
+
+    # 1) PI by topic (top N topics by pi_rows) - stacked confidence
+    st.markdown("#### By topic")
+    if df_pi_by_topic.empty:
+        st.info("No PI-by-topic summary found; run the aggregator to produce summary_pi_questions_by_topic.csv")
+    else:
+        df = df_pi_by_topic.copy()
+        if "pi_rows" in df.columns:
+            df["pi_rows"] = pd.to_numeric(df["pi_rows"], errors="coerce").fillna(0)
+        pct_cols = [c for c in ["pct_confidence_high", "pct_confidence_medium", "pct_confidence_low"] if c in df.columns]
+        top_n = min(10, len(df))
+        top_n = st.slider("Topics to show", min_value=1, max_value=46, value=10)
+        df_top = df.sort_values("pi_rows", ascending=False).head(top_n)
+        if pct_cols and "topic_label" in df_top.columns:
+            dfm = pd.melt(df_top, id_vars=["topic_label"], value_vars=pct_cols, var_name="confidence", value_name="pct")
+            dfm["confidence"] = dfm["confidence"].map({"pct_confidence_high": "High", "pct_confidence_medium": "Medium", "pct_confidence_low": "Low"}).fillna(dfm["confidence"])
+            chart = alt.Chart(dfm).mark_bar().encode(
+                x=alt.X("topic_label:N", sort=alt.EncodingSortField(field="pct", op="sum", order="descending"), title="Topic"),
+                y=alt.Y("pct:Q", title="Percent"),
+                color=alt.Color("confidence:N", title="Confidence"),
+                tooltip=["topic_label", "confidence", "pct"],
+            ).properties(height=360)
+            st.altair_chart(chart, use_container_width=True)
+        else:
+            # Fallback: show pi_rows counts
+            if "topic_label" in df_top.columns and "pi_rows" in df_top.columns:
+                chart = alt.Chart(df_top).mark_bar().encode(x=alt.X("topic_label:N", sort=alt.EncodingSortField(field="pi_rows", op="sum", order="descending")), y=alt.Y("pi_rows:Q", title="PI rows"), tooltip=["topic_label", "pi_rows"]).properties(height=320)
+                st.altair_chart(chart, use_container_width=True)
+            else:
+                st.info("Insufficient columns in PI-by-topic summary for charts.")
+
+    # 2) PI by cycle - stacked confidence
+    st.markdown("#### By cycle")
+    if df_pi_by_cycle.empty:
+        st.info("No PI-by-cycle summary found; run the aggregator to produce summary_pi_questions_by_cycle.csv")
+    else:
+        df = df_pi_by_cycle.copy()
+        pct_cols = [c for c in ["pct_confidence_high", "pct_confidence_medium", "pct_confidence_low"] if c in df.columns]
+        if pct_cols and "cycle_id" in df.columns:
+            for c in pct_cols:
+                df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
+            dfm = pd.melt(df, id_vars=["cycle_id"], value_vars=pct_cols, var_name="confidence", value_name="pct")
+            dfm["confidence"] = dfm["confidence"].map({"pct_confidence_high": "High", "pct_confidence_medium": "Medium", "pct_confidence_low": "Low"}).fillna(dfm["confidence"])
+            chart = alt.Chart(dfm).mark_bar().encode(x=alt.X("cycle_id:N", title="Cycle"), y=alt.Y("pct:Q", title="Percent"), color=alt.Color("confidence:N", title="Confidence"), tooltip=["cycle_id", "confidence", "pct"]).properties(height=280)
+            st.altair_chart(chart, use_container_width=True)
+        else:
+            st.info("Insufficient columns in PI-by-cycle summary for confidence chart; showing counts if available.")
+            if "question_rows" in df.columns and "cycle_id" in df.columns:
+                df["question_rows"] = pd.to_numeric(df["question_rows"], errors="coerce").fillna(0)
+                chart = alt.Chart(df).mark_bar().encode(x=alt.X("cycle_id:N", title="Cycle"), y=alt.Y("question_rows:Q", title="Question rows"), tooltip=["cycle_id", "question_rows"]).properties(height=280)
+                st.altair_chart(chart, use_container_width=True)
+
+    # 3) PI by question/type - stacked confidence
+    st.markdown("#### By question type")
+    if df_pi_by_question.empty:
+        st.info("No PI-by-type summary found; run the aggregator to produce summary_pi_questions_by_type.csv")
+    else:
+        df = df_pi_by_question.copy()
+        pct_cols = [c for c in ["pct_confidence_high", "pct_confidence_medium", "pct_confidence_low"] if c in df.columns]
+        if pct_cols and "question_label" in df.columns:
+            for c in pct_cols:
+                df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
+            dfm = pd.melt(df, id_vars=["question_label"], value_vars=pct_cols, var_name="confidence", value_name="pct")
+            dfm["confidence"] = dfm["confidence"].map({"pct_confidence_high": "High", "pct_confidence_medium": "Medium", "pct_confidence_low": "Low"}).fillna(dfm["confidence"])
+            chart = alt.Chart(dfm).mark_bar().encode(x=alt.X("question_label:N", sort=alt.EncodingSortField(field="pct", op="sum", order="descending"), title="Question"), y=alt.Y("pct:Q", title="Percent"), color=alt.Color("confidence:N", title="Confidence"), tooltip=["question_label", "confidence", "pct"]).properties(height=300)
+            st.altair_chart(chart, use_container_width=True)
+        else:
+            if "question_rows" in df.columns and "question_label" in df.columns:
+                df["question_rows"] = pd.to_numeric(df["question_rows"], errors="coerce").fillna(0)
+                chart = alt.Chart(df).mark_bar().encode(x=alt.X("question_label:N", sort=alt.EncodingSortField(field="question_rows", op="sum", order="descending"), title="Question"), y=alt.Y("question_rows:Q", title="Question rows"), tooltip=["question_label", "question_rows"]).properties(height=300)
+                st.altair_chart(chart, use_container_width=True)
+            else:
+                st.info("Insufficient columns in PI-by-type summary for charts.")
+
+    # 4) PI by cycle + topic: choose a topic and view cycle-level confidence distribution
+    st.markdown("#### By cycle and topic")
+    if df_pi_by_cycle_topic.empty:
+        st.info("No PI-by-cycle-and-topic summary found; run the aggregator to produce summary_pi_questions_by_cycle_and_topic.csv")
+    else:
+        df = df_pi_by_cycle_topic.copy()
+        if "topic_label" in df.columns:
+            topics = sorted(df["topic_label"].astype(str).unique())
+            sel_topic = st.selectbox("Select topic", topics)
+            sel_df = df[df["topic_label"].astype(str) == sel_topic]
+            pct_cols = [c for c in ["pct_confidence_high", "pct_confidence_medium", "pct_confidence_low"] if c in sel_df.columns]
+            if pct_cols and "cycle_id" in sel_df.columns:
+                for c in pct_cols:
+                    sel_df[c] = pd.to_numeric(sel_df[c], errors="coerce").fillna(0)
+                dfm = pd.melt(sel_df, id_vars=["cycle_id"], value_vars=pct_cols, var_name="confidence", value_name="pct")
+                dfm["confidence"] = dfm["confidence"].map({"pct_confidence_high": "High", "pct_confidence_medium": "Medium", "pct_confidence_low": "Low"}).fillna(dfm["confidence"])
+                chart = alt.Chart(dfm).mark_bar().encode(x=alt.X("cycle_id:N", title="Cycle"), y=alt.Y("pct:Q", title="Percent"), color=alt.Color("confidence:N", title="Confidence"), tooltip=["cycle_id", "confidence", "pct"]).properties(height=300)
+                st.altair_chart(chart, use_container_width=True)
+            else:
+                if "pi_rows" in sel_df.columns and "cycle_id" in sel_df.columns:
+                    sel_df["pi_rows"] = pd.to_numeric(sel_df["pi_rows"], errors="coerce").fillna(0)
+                    chart = alt.Chart(sel_df).mark_bar().encode(x=alt.X("cycle_id:N", title="Cycle"), y=alt.Y("pi_rows:Q", title="PI rows"), tooltip=["cycle_id", "pi_rows"]).properties(height=300)
+                    st.altair_chart(chart, use_container_width=True)
+                else:
+                    st.info("Insufficient columns for cycle+topic chart for the selected topic.")
+        else:
+            st.info("Topic label column missing in cycle+topic summary.")
+
+    # 5) PI by cycle + type: choose a question type and view percent-with-evidence (preferred), then confidence or counts
+    st.markdown("#### By cycle and question type")
+    if df_pi_by_cycle_question.empty:
+        st.info("No PI-by-cycle-and-type summary found; run the aggregator to produce summary_pi_questions_by_cycle_and_type.csv")
+    else:
+        df = df_pi_by_cycle_question.copy()
+        if "question_label" in df.columns:
+            questions = sorted(df["question_label"].astype(str).unique())
+            sel_q = st.selectbox("Select question type", questions)
+            sel_df = df[df["question_label"].astype(str) == sel_q]
+            # Prefer percent of rows with evidence refs if available
+            if "pct_rows_with_evidence_refs" in sel_df.columns and "cycle_id" in sel_df.columns:
+                sel_df["pct_rows_with_evidence_refs"] = pd.to_numeric(sel_df["pct_rows_with_evidence_refs"], errors="coerce").fillna(0)
+                chart = alt.Chart(sel_df).mark_bar().encode(
+                    x=alt.X("cycle_id:N", title="Cycle"),
+                    y=alt.Y("pct_rows_with_evidence_refs:Q", title="% rows with evidence refs"),
+                    tooltip=["cycle_id", "pct_rows_with_evidence_refs"],
+                ).properties(height=300)
+                st.altair_chart(chart, use_container_width=True)
+            else:
+                # fallback: prefer confidence cols if present
+                pct_cols = [c for c in ["pct_confidence_high", "pct_confidence_medium", "pct_confidence_low"] if c in sel_df.columns]
+                if pct_cols and "cycle_id" in sel_df.columns:
+                    for c in pct_cols:
+                        sel_df[c] = pd.to_numeric(sel_df[c], errors="coerce").fillna(0)
+                    dfm = pd.melt(sel_df, id_vars=["cycle_id"], value_vars=pct_cols, var_name="confidence", value_name="pct")
+                    dfm["confidence"] = dfm["confidence"].map({"pct_confidence_high": "High", "pct_confidence_medium": "Medium", "pct_confidence_low": "Low"}).fillna(dfm["confidence"])
+                    chart = alt.Chart(dfm).mark_bar().encode(x=alt.X("cycle_id:N", title="Cycle"), y=alt.Y("pct:Q", title="Percent"), color=alt.Color("confidence:N", title="Confidence"), tooltip=["cycle_id", "confidence", "pct"]).properties(height=300)
+                    st.altair_chart(chart, use_container_width=True)
+                else:
+                    if "question_rows" in sel_df.columns and "cycle_id" in sel_df.columns:
+                        sel_df["question_rows"] = pd.to_numeric(sel_df["question_rows"], errors="coerce").fillna(0)
+                        chart = alt.Chart(sel_df).mark_bar().encode(x=alt.X("cycle_id:N", title="Cycle"), y=alt.Y("question_rows:Q", title="Question rows"), tooltip=["cycle_id", "question_rows"]).properties(height=300)
+                        st.altair_chart(chart, use_container_width=True)
+                    else:
+                        st.info("Insufficient columns for cycle+type chart for the selected question type.")
+
