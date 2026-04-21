@@ -269,13 +269,21 @@ def run_chat_query(
 
     enriched_rows = []
     for row in rows:
-        manual_match = infer_manual_unit_for_text(str(row.get("text", "") or ""))
         enriched = dict(row)
-        # preserve best-match id and score
-        enriched["manual_unit_id_best_match"] = manual_match.get("manual_unit_id", "")
-        enriched["manual_unit_match_score"] = manual_match.get("score", "")
-        # attach manual_week (numeric session) and a human-friendly manual_session label
-        enriched["manual_week"] = manual_match.get("manual_week", "")
+        # If the row already contains a canonical manual match (for example
+        # returned by the `manual_only` canonical branch), skip expensive
+        # re-matching and trust the provided fields.
+        if not enriched.get("manual_unit_id_best_match"):
+            manual_match = infer_manual_unit_for_text(str(row.get("text", "") or ""))
+            # preserve best-match id and score
+            enriched["manual_unit_id_best_match"] = manual_match.get("manual_unit_id", "")
+            enriched["manual_unit_match_score"] = manual_match.get("score", "")
+            # attach manual_week (numeric session) and a human-friendly manual_session label
+            enriched["manual_week"] = manual_match.get("manual_week", "")
+        else:
+            # ensure manual_week is present when canonical fields exist
+            enriched.setdefault("manual_week", enriched.get("manual_week", ""))
+            enriched.setdefault("manual_unit_match_score", enriched.get("manual_unit_match_score", ""))
         try:
             if enriched.get("manual_week"):
                 enriched["manual_session"] = f"Session {str(enriched.get('manual_week'))}"

@@ -849,6 +849,50 @@ def query_evidence(
         weight_topic = get_float("cycle_analysis", "fidelity_weight_topic", 0.5)
     import numpy as _np
 
+    # If caller requested canonical manual-only retrieval, search the
+    # pre-built manual-unit embedding index directly and return the top-k
+    # canonical units. This keeps RAG retrieval semantics unchanged for
+    # non-manual flows while ensuring manual-only mode returns authoritative
+    # `MAN_xxxx` units.
+    if manual_only:
+        units, unit_emb = get_manual_unit_embedding_index()
+        if unit_emb is None or unit_emb.size == 0 or not units:
+            return []
+        # Use the same embedding model used elsewhere to encode the query.
+        model = get_embedding_model()
+        qvec = model.encode([query_text], convert_to_numpy=True)[0].astype(_np.float32)
+        # Normalize query vector and compute cosine sims with unit embeddings
+        qn = qvec / (_np.linalg.norm(qvec) or 1.0)
+        sims = unit_emb.dot(qn)
+        idxs = _np.argsort(-sims)[: int(topk) if topk is not None else len(units)]
+        results: list[dict[str, Any]] = []
+        for rank, loc in enumerate(idxs, start=1):
+            i = int(loc)
+            u = units[i]
+            sim = float(sims[i])
+            mw = str(u.get("manual_week", "") or "")
+            results.append(
+                {
+                    "rank": rank,
+                    "doc_index": i,
+                    "file": str(SOURCE_MANUAL),
+                    "text": u.get("matching_text", u.get("text", "")),
+                    "score_doc": sim,
+                    "score_topic": None,
+                    "score_combined": sim,
+                    "cycle_id": "",
+                    "session_id": mw or "manual",
+                    "speaker": "manual",
+                    "source_type": "manual",
+                    "manual_unit_id_best_match": u.get("manual_unit_id", ""),
+                    "manual_unit_match_score": f"{sim:.4f}",
+                    "manual_week": mw,
+                    "manual_session": (f"Session {mw}" if mw else ""),
+                    "evidence_source": "canonical_manual_unit_index",
+                }
+            )
+        return results
+
     module = load_source_query_module()
     meta, emb_array = module._load_meta_and_embeddings(str(SOURCE_RAG_INDEX))
     if emb_array is None:
