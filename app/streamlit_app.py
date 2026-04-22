@@ -368,7 +368,7 @@ with tab1:
                     ]
                 ]
             ),
-            use_container_width=True,
+            width='stretch',
             hide_index=True,
         )
 
@@ -415,7 +415,7 @@ with tab2:
 
         st.dataframe(
             add_readable_columns(display_df),
-            use_container_width=True,
+            width='stretch',
             hide_index=True,
         )
 
@@ -498,7 +498,7 @@ with tab2:
                             ]
                         ]
                     ),
-                    use_container_width=True,
+                    width='stretch',
                     hide_index=True,
                 )
         with c2:
@@ -517,7 +517,7 @@ with tab2:
                             ]
                         ]
                     ),
-                    use_container_width=True,
+                    width='stretch',
                     hide_index=True,
                 )
 
@@ -614,7 +614,7 @@ with tab3:
             available_cols = [c for c in display_cols if c in answer_df.columns]
             st.dataframe(
                 add_readable_columns(answer_df[available_cols]),
-                use_container_width=True,
+                width='stretch',
                 hide_index=True,
             )
 
@@ -790,7 +790,7 @@ with tab4:
 
             st.dataframe(
                 add_readable_columns(display_df[cols_to_show]),
-                use_container_width=True,
+                width='stretch',
                 hide_index=True,
             )
 
@@ -859,7 +859,7 @@ with tab5:
                         ]
                     ]
                 ),
-                use_container_width=True,
+                width='stretch',
                 hide_index=True,
             )
 
@@ -950,6 +950,18 @@ with tab6:
                 help="Choose the prompt style sent to the model: default QA, PI question style, or fidelity adjudication style.",
             )
 
+        # Show the configured default Ollama model and allow a per-run override.
+        default_ollama_model = get_str("ollama", "default_model", "gpt-oss:120b")
+        ollama_model_input = st.text_input(
+            "Ollama model (optional)",
+            value="",
+            help="Override the default Ollama model for this run; leave blank to use settings.ini default.",
+        )
+        if not ollama_model_input:
+            st.caption(f"Default Ollama model: {default_ollama_model}")
+        else:
+            st.caption(f"Using override model: {ollama_model_input}")
+
         preview_prompt = st.form_submit_button("Preview prompt")
         submit_chat = st.form_submit_button("Run RAG chat")
 
@@ -1001,6 +1013,7 @@ with tab6:
                                 include_manual=chat_include_manual or chat_manual_only,
                                 manual_only=chat_manual_only,
                                 answer_with_model=False,
+                                ollama_model=ollama_model_input,
                                 manual_units=manual_units_payload,
                                 prompt_variant=prompt_variant,
                             )
@@ -1110,8 +1123,12 @@ with tab6:
                             )
                             raw = ""
                             try:
-                                model_name = get_str("ollama", "default_model", "gpt-oss:120b")
-                                raw = call_ollama(prompt_text, model_name)
+                                # Prefer per-run override when provided
+                                chosen_model = (ollama_model_input.strip() or get_str("ollama", "default_model", "gpt-oss:120b"))
+                                raw = call_ollama(prompt_text, chosen_model)
+                                # record which model we used for this saved payload
+                                answer_payload = parse_json_response(raw)
+                                # ensure payload will include model below
                                 answer_payload = parse_json_response(raw)
                             except Exception as exc:
                                 st.error("Model call failed for manual-only summarization.")
@@ -1134,6 +1151,8 @@ with tab6:
                                 "answer": answer_payload,
                                 "evidence": manual_evidence,
                             }
+                            # persist which Ollama model was used for this run
+                            payload["ollama_model"] = chosen_model
                             st.session_state["rag_chat_payload"] = payload
                             # clear any prior error if call succeeded (or we handled it)
                             st.session_state["rag_chat_error"] = st.session_state.get("rag_chat_error", "")
@@ -1177,11 +1196,15 @@ with tab6:
                                 include_manual=chat_include_manual,
                                 manual_only=chat_manual_only,
                                 answer_with_model=chat_answer_with_model,
-                                    prompt_variant=prompt_variant,
-                                    manual_units=manual_units_payload,
+                                ollama_model=ollama_model_input,
+                                prompt_variant=prompt_variant,
+                                manual_units=manual_units_payload,
                             )
-                        st.session_state["rag_chat_payload"] = payload
-                        st.session_state["rag_chat_error"] = ""
+                            # attach chosen model into the payload for reproducibility
+                            chosen = ollama_model_input.strip() or get_str("ollama", "default_model", "gpt-oss:120b")
+                            payload["ollama_model"] = chosen
+                            st.session_state["rag_chat_payload"] = payload
+                            st.session_state["rag_chat_error"] = ""
                     except Exception as exc:
                         st.error("RAG chat query failed.")
                         st.code(str(exc))
@@ -1321,7 +1344,7 @@ with tab6:
                 if col in evidence_df.columns
             ]
 
-            st.dataframe(add_readable_columns(evidence_df[display_cols]), use_container_width=True, hide_index=True)
+            st.dataframe(add_readable_columns(evidence_df[display_cols]), width='stretch', hide_index=True)
 
             for idx, row in enumerate(evidence_rows, start=1):
                 title = f"E{idx} | {row.get('source_type','')} | rank {row.get('rank','')}"
@@ -1371,7 +1394,7 @@ with tab6:
                 else:
                     display = add_readable_columns(df)
                     st.markdown(f"**Preview: {chosen}**")
-                    st.dataframe(display, use_container_width=True)
+                    st.dataframe(display, width='stretch')
 
                     # Altair-powered plotting: let user pick X and Y axes and plot type.
                     cols_all = [c for c in df.columns]
@@ -1425,7 +1448,7 @@ with tab6:
                             else:
                                 chart = alt.Chart(vis_df.reset_index()).mark_line().encode(x=alt.X("index", type="quantitative"), y=alt.Y(y_choice, type="quantitative"), tooltip=[y_choice, "index"]) 
 
-                        st.altair_chart(chart, use_container_width=True)
+                        st.altair_chart(chart, width='stretch')
 
                     with open(path, "rb") as fh:
                         st.download_button(label="Download CSV", data=fh, file_name=chosen)
@@ -1489,7 +1512,7 @@ with tab8:
                     order=alt.Order("confidence", sort="descending"),
                     tooltip=["cycle_id", "confidence", "pct"],
                 ).properties(height=320)
-                st.altair_chart(chart, use_container_width=True)
+                st.altair_chart(chart, width='stretch')
             except Exception:
                 st.info("Unable to render adjudication stacked chart for the current data.")
         else:
@@ -1523,7 +1546,7 @@ with tab8:
                     order=alt.Order("confidence", sort="descending"),
                     tooltip=["cycle_id", "confidence", "pct"],
                 ).properties(height=320)
-                st.altair_chart(chart, use_container_width=True)
+                st.altair_chart(chart, width='stretch')
             except Exception:
                 st.info("Unable to render adjudication-confidence stacked chart for the current data.")
         else:
@@ -1556,7 +1579,7 @@ with tab8:
                     order=alt.Order("adjudication", sort="descending"),
                     tooltip=[name_col, "adjudication", "pct"],
                 ).properties(height=360)
-                st.altair_chart(chart, use_container_width=True)
+                st.altair_chart(chart, width='stretch')
             except Exception:
                 st.info("Unable to render session-level adjudication chart for the current data.")
         else:
@@ -1587,7 +1610,7 @@ with tab8:
                     order=alt.Order("confidence", sort="descending"),
                     tooltip=[name_col, "confidence", "pct"],
                 ).properties(height=360)
-                st.altair_chart(chart, use_container_width=True)
+                st.altair_chart(chart, width='stretch')
             except Exception:
                 st.info("Unable to render session-level adjudication-confidence chart for the current data.")
         else:
@@ -1645,12 +1668,12 @@ with tab8:
                 color=alt.Color("confidence:N", title="Confidence"),
                 tooltip=["topic_label", "confidence", "pct"],
             ).properties(height=360)
-            st.altair_chart(chart, use_container_width=True)
+            st.altair_chart(chart, width='stretch')
         else:
             # Fallback: show pi_rows counts
             if "topic_label" in df_top.columns and "pi_rows" in df_top.columns:
                 chart = alt.Chart(df_top).mark_bar().encode(x=alt.X("topic_label:N", sort=alt.EncodingSortField(field="pi_rows", op="sum", order="descending")), y=alt.Y("pi_rows:Q", title="PI rows"), tooltip=["topic_label", "pi_rows"]).properties(height=320)
-                st.altair_chart(chart, use_container_width=True)
+                st.altair_chart(chart, width='stretch')
             else:
                 st.info("Insufficient columns in PI-by-topic summary for charts.")
 
@@ -1667,13 +1690,13 @@ with tab8:
             dfm = pd.melt(df, id_vars=["cycle_id"], value_vars=pct_cols, var_name="confidence", value_name="pct")
             dfm["confidence"] = dfm["confidence"].map({"pct_confidence_high": "High", "pct_confidence_medium": "Medium", "pct_confidence_low": "Low"}).fillna(dfm["confidence"])
             chart = alt.Chart(dfm).mark_bar().encode(x=alt.X("cycle_id:N", title="Cycle"), y=alt.Y("pct:Q", title="Percent"), color=alt.Color("confidence:N", title="Confidence"), tooltip=["cycle_id", "confidence", "pct"]).properties(height=280)
-            st.altair_chart(chart, use_container_width=True)
+            st.altair_chart(chart, width='stretch')
         else:
             st.info("Insufficient columns in PI-by-cycle summary for confidence chart; showing counts if available.")
             if "question_rows" in df.columns and "cycle_id" in df.columns:
                 df["question_rows"] = pd.to_numeric(df["question_rows"], errors="coerce").fillna(0)
                 chart = alt.Chart(df).mark_bar().encode(x=alt.X("cycle_id:N", title="Cycle"), y=alt.Y("question_rows:Q", title="Question rows"), tooltip=["cycle_id", "question_rows"]).properties(height=280)
-                st.altair_chart(chart, use_container_width=True)
+                st.altair_chart(chart, width='stretch')
 
     # 3) PI by question/type - stacked confidence
     st.markdown("#### By question type")
@@ -1688,12 +1711,12 @@ with tab8:
             dfm = pd.melt(df, id_vars=["question_label"], value_vars=pct_cols, var_name="confidence", value_name="pct")
             dfm["confidence"] = dfm["confidence"].map({"pct_confidence_high": "High", "pct_confidence_medium": "Medium", "pct_confidence_low": "Low"}).fillna(dfm["confidence"])
             chart = alt.Chart(dfm).mark_bar().encode(x=alt.X("question_label:N", sort=alt.EncodingSortField(field="pct", op="sum", order="descending"), title="Question"), y=alt.Y("pct:Q", title="Percent"), color=alt.Color("confidence:N", title="Confidence"), tooltip=["question_label", "confidence", "pct"]).properties(height=300)
-            st.altair_chart(chart, use_container_width=True)
+            st.altair_chart(chart, width='stretch')
         else:
             if "question_rows" in df.columns and "question_label" in df.columns:
                 df["question_rows"] = pd.to_numeric(df["question_rows"], errors="coerce").fillna(0)
                 chart = alt.Chart(df).mark_bar().encode(x=alt.X("question_label:N", sort=alt.EncodingSortField(field="question_rows", op="sum", order="descending"), title="Question"), y=alt.Y("question_rows:Q", title="Question rows"), tooltip=["question_label", "question_rows"]).properties(height=300)
-                st.altair_chart(chart, use_container_width=True)
+                st.altair_chart(chart, width='stretch')
             else:
                 st.info("Insufficient columns in PI-by-type summary for charts.")
 
@@ -1714,12 +1737,12 @@ with tab8:
                 dfm = pd.melt(sel_df, id_vars=["cycle_id"], value_vars=pct_cols, var_name="confidence", value_name="pct")
                 dfm["confidence"] = dfm["confidence"].map({"pct_confidence_high": "High", "pct_confidence_medium": "Medium", "pct_confidence_low": "Low"}).fillna(dfm["confidence"])
                 chart = alt.Chart(dfm).mark_bar().encode(x=alt.X("cycle_id:N", title="Cycle"), y=alt.Y("pct:Q", title="Percent"), color=alt.Color("confidence:N", title="Confidence"), tooltip=["cycle_id", "confidence", "pct"]).properties(height=300)
-                st.altair_chart(chart, use_container_width=True)
+                st.altair_chart(chart, width='stretch')
             else:
                 if "pi_rows" in sel_df.columns and "cycle_id" in sel_df.columns:
                     sel_df["pi_rows"] = pd.to_numeric(sel_df["pi_rows"], errors="coerce").fillna(0)
                     chart = alt.Chart(sel_df).mark_bar().encode(x=alt.X("cycle_id:N", title="Cycle"), y=alt.Y("pi_rows:Q", title="PI rows"), tooltip=["cycle_id", "pi_rows"]).properties(height=300)
-                    st.altair_chart(chart, use_container_width=True)
+                    st.altair_chart(chart, width='stretch')
                 else:
                     st.info("Insufficient columns for cycle+topic chart for the selected topic.")
         else:
@@ -1743,7 +1766,7 @@ with tab8:
                     y=alt.Y("pct_rows_with_evidence_refs:Q", title="% rows with evidence refs"),
                     tooltip=["cycle_id", "pct_rows_with_evidence_refs"],
                 ).properties(height=300)
-                st.altair_chart(chart, use_container_width=True)
+                st.altair_chart(chart, width='stretch')
             else:
                 # fallback: prefer confidence cols if present
                 pct_cols = [c for c in ["pct_confidence_high", "pct_confidence_medium", "pct_confidence_low"] if c in sel_df.columns]
@@ -1753,12 +1776,12 @@ with tab8:
                     dfm = pd.melt(sel_df, id_vars=["cycle_id"], value_vars=pct_cols, var_name="confidence", value_name="pct")
                     dfm["confidence"] = dfm["confidence"].map({"pct_confidence_high": "High", "pct_confidence_medium": "Medium", "pct_confidence_low": "Low"}).fillna(dfm["confidence"])
                     chart = alt.Chart(dfm).mark_bar().encode(x=alt.X("cycle_id:N", title="Cycle"), y=alt.Y("pct:Q", title="Percent"), color=alt.Color("confidence:N", title="Confidence"), tooltip=["cycle_id", "confidence", "pct"]).properties(height=300)
-                    st.altair_chart(chart, use_container_width=True)
+                    st.altair_chart(chart, width='stretch')
                 else:
                     if "question_rows" in sel_df.columns and "cycle_id" in sel_df.columns:
                         sel_df["question_rows"] = pd.to_numeric(sel_df["question_rows"], errors="coerce").fillna(0)
                         chart = alt.Chart(sel_df).mark_bar().encode(x=alt.X("cycle_id:N", title="Cycle"), y=alt.Y("question_rows:Q", title="Question rows"), tooltip=["cycle_id", "question_rows"]).properties(height=300)
-                        st.altair_chart(chart, use_container_width=True)
+                        st.altair_chart(chart, width='stretch')
                     else:
                         st.info("Insufficient columns for cycle+type chart for the selected question type.")
 
