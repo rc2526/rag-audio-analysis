@@ -292,4 +292,36 @@ python scripts/build_prebuilt_heatmaps.py \
   --force
 ```
 
+### Additional implemented updates (2026-04-22)
+
+The following features were added after the original notes above and are implemented in the current codebase:
+
+- Manual × Manual dense similarity
+  - A dense Manual×Manual similarity view was added to the Streamlit UI. Users can either load a precomputed similarity file from `data/derived/manual_unit_similarities/` or compute it on demand via the UI button `Compute manual×manual similarity (dense)`.
+  - When computed the matrix is L2-normalized and saved (autosave) to `data/derived/manual_unit_similarities/manual_sim_autosave.parquet`. A CSV download option is available in the UI for portability.
+
+- Streamlit UI: tab split and independent controls
+  - The UI now exposes two explicit tabs: `Transcript × Manual` and `Manual × Manual`. Controls that only apply to the dense manual similarity (threshold) live in an independent slider `Min score to show (manual×manual)` in the sidebar so the two views are independent.
+  - The previous checkbox that gated the Manual×Manual view was removed — the Manual tab is always visible.
+  - The Build button was removed from the UI; the prebuilt discovery selector in the sidebar loads persisted prebuilt files from `data/derived/topk_window_manual_heatmaps/` into `st.session_state` instead of rebuilding interactively.
+
+- Session-state caching and keys
+  - To avoid re-computation and to make UI interactions snappy, the app caches several objects in `st.session_state`:
+    - `matches` — loaded long-form matches table (prebuilt)
+    - `diag` — diagnostics dict saved alongside prebuilt matches
+    - `mode_loaded` — the loaded prebuilt key
+    - `manual_sim_full` — cached full manual×manual DataFrame
+    - `manual_sim_loaded_key` — filename key for the loaded/saved manual sim
+
+- Fixes and housekeeping
+  - A subtle indentation/nesting bug was fixed: the transcript render helper (`render_transcript_tab`) was accidentally defined nested inside the detail render function which caused transcript UI pieces (Matches table, selection) to leak into the Manual tab. Those helpers are now top-level functions and the tab isolation works correctly.
+  - Hover content remains trimmed for readability; the detail panel still exposes full texts and metadata.
+
+### How to compute / load manual×manual similarity
+
+- Compute from the Streamlit UI: open the `Manual × Manual` tab and press `Compute manual×manual similarity (dense)` — the result will be cached in `st.session_state` and autosaved to `data/derived/manual_unit_similarities/manual_sim_autosave.parquet`.
+- Load a precomputed matrix: place a `.parquet` or `.csv` matrix (square, indexed by `manual_unit_id`) in `data/derived/manual_unit_similarities/` and use the `Load precomputed similarity file` selector inside the Manual tab.
+
+These additions keep the heavy compute offline or on-demand, make the two views independent, and improve reproducibility when exploring both the sparse Transcript×Manual matches and the dense Manual×Manual similarity space.
+
 Optional: to avoid cycle-bias for a global sample, run a randomized entire-corpus build separately (not covered by this simplified script) using `random_sample=true` and a fixed seed.
