@@ -201,36 +201,33 @@ def build_chat_prompt(
         return "\n".join(parts)
 
     # default (legacy) prompt
+    # New simplified default RAG prompt
     parts = [
-        "You are answering a research user's question using only the retrieved evidence below.",
-        "Return valid JSON only.",
+        "Answer this question provided by the user. List the evidence refs you used in an array called `evidence_refs` (for example: ['E1','E2']).",
         "",
         f"Question: {question}",
         "",
         "Retrieved evidence:",
     ]
     if evidence_rows:
-        # Use the same evidence-line renderer (includes manual_session and match score)
-        parts.extend(_evidence_lines(evidence_rows, 500))
+        parts.extend(_evidence_lines(evidence_rows, 300))
     else:
         parts.append("- No retrieved evidence windows were available.")
-    parts.extend(
-        [
-            "",
-            "Respond with JSON with exactly these keys (include `session_number` and `session_explanation`):",
-            "{",
-            '  "answer_summary": "short paragraph",',
-            '  "session_number": 0,',
-            '  "session_explanation": "short 1-3 sentence justification that cites evidence refs (for example: \"E2, E5\")",',
-            '  "evidence_refs": ["E1","E2"],',
-            '  "manual_unit_ids": ["MAN_0001","MAN_0002"],',
-            '  "confidence": "low|medium|high"',
-            "}",
-            "Base the answer only on the retrieved evidence. You MUST set `session_number` to an integer 1..12 representing the best guess of the manual session (or -1/\"unknown\" if you cannot decide).",
-            "In `session_explanation`, briefly explain (1–3 sentences) how you arrived at `session_number` and cite the specific evidence lines by their IDs (for example: 'E2, E5'). If evidence is weak or contradictory, say so and include the refs that show the contradiction.",
-        ]
-    )
+    parts.extend([
+        "",
+        "Respond with JSON containing these keys:",
+        "{",
+        '  "answer_summary": "short paragraph",',
+        '  "evidence_refs": ["E1","E2"],',
+        '  "confidence": "low|medium|high"',
+        "}",
+    ])
     return "\n".join(parts)
+
+
+def _nonrag_prompt(question: str) -> str:
+    """Very simple non-RAG prompt used for the non-RAG flow."""
+    return f"Answer this question provided by the user.\n\nQuestion: {question}\n\nProvide a concise answer." 
 
 
 def run_chat_query(

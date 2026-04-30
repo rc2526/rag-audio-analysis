@@ -328,13 +328,12 @@ m3.metric("PI-question rows", len(answers_view.index))
 m4.metric("Evidence rows", len(evidence_view.index))
 
 
-tab_fidelity, tab_pi, tab_manual, tab_topic_map, tab_topic_transcript, tab_evidence, tab_rag, tab_summaries, tab_visuals = st.tabs(
+tab_fidelity, tab_pi, tab_manual, tab_topic_map, tab_evidence, tab_rag, tab_summaries, tab_visuals = st.tabs(
     [
         "Fidelity",
         "PI Questions",
         "Manual Units",
         "Topic Map",
-        "Topic × Transcript",
         "Evidence Browser",
         "RAG Chat",
         "Summaries",

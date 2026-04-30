@@ -211,6 +211,105 @@ def encode_texts(texts: list[str]) -> np.ndarray:
     return normalize_rows(matrix)
 
 
+def query_evidence_by_manual_unit_similarity(
+    session_manual_units: list[dict[str, Any]],
+    cycle_id: str,
+    meta_rows: list[dict[str, Any]],
+    path_lookup: dict[str, list[int]],
+    window: int,
+    topk_per_unit: int = 0,
+    min_similarity: float | None = None,
+    global_cap: int | None = None,
+) -> list[dict[str, Any]]:
+    """Vectorized similarity: compute manual-unit vs cycle-window cosine similarities.
+
+    Returns list of evidence rows annotated with query_manual_unit_id and mapped_manual_unit_match_score
+    for pairs meeting the min_similarity threshold. If topk_per_unit>0, limit matches per unit.
+    """
+    if not session_manual_units:
+        return []
+    if min_similarity is None:
+        min_similarity = get_float("topic_matching", "manual_unit_min_similarity", 0.6)
+
+    # Prepare manual unit texts and ids
+    manual_texts: list[str] = [str(u.get("matching_text", u.get("text", "")) or "").strip() for u in session_manual_units]
+    manual_ids: list[str] = [str(u.get("manual_unit_id", "")) for u in session_manual_units]
+    if not manual_texts:
+        return []
+
+    manual_embs = encode_texts(manual_texts)
+
+    # Collect candidate transcript windows for the given cycle
+    window_texts: list[str] = []
+    window_doc_indices: list[int] = []
+    window_meta_rows: list[dict[str, Any]] = []
+    for idx, row in enumerate(meta_rows):
+        path = str(row.get("path", "") or row.get("file", "") or "")
+        if not path:
+            continue
+        if infer_cycle_id(path) != cycle_id:
+            continue
+        # Expand context for this doc_index
+        ctx = expand_transcript_context(idx, meta_rows=meta_rows, path_lookup=path_lookup, window=window)
+        text = str(ctx.get("text", "") or "").strip()
+        if not text:
+            continue
+        window_texts.append(text)
+        window_doc_indices.append(idx)
+        window_meta_rows.append(ctx)
+
+    if not window_texts:
+        return []
+
+    window_embs = encode_texts(window_texts)
+
+    # Compute cosine similarities matrix: manual_embs (m x d) dot window_embs.T (d x n) => (m x n)
+    sims = np.matmul(manual_embs, window_embs.T)
+
+    rows: list[dict[str, Any]] = []
+    m, n = sims.shape
+    for i in range(m):
+        sims_row = sims[i]
+        # find indices meeting threshold
+        candidate_idxs = [j for j in range(n) if sims_row[j] >= min_similarity]
+        # sort by descending similarity
+        candidate_idxs.sort(key=lambda j: float(sims_row[j]), reverse=True)
+        if topk_per_unit and topk_per_unit > 0:
+            candidate_idxs = candidate_idxs[:topk_per_unit]
+        for rank, j in enumerate(candidate_idxs, start=1):
+            ctx = window_meta_rows[j]
+            doc_index = int(window_doc_indices[j])
+            text = window_texts[j]
+            score = float(sims_row[j])
+            rows.append(
+                {
+                    "doc_index": doc_index,
+                    "retrieval_rank": rank,
+                    "session_id": infer_session_id(str(ctx.get("path", "") or ctx.get("file", ""))),
+                    "cycle_id": cycle_id,
+                    "speaker": ctx.get("speaker", ""),
+                    "score_combined": score,
+                    "score_doc": "",
+                    "score_topic": "",
+                    "text": text,
+                    "manual_unit_id_best_match": manual_ids[i],
+                    "manual_unit_match_score": score,
+                    "query_manual_unit_id": manual_ids[i],
+                    "query_manual_unit_subsection": session_manual_units[i].get("manual_subsection", ""),
+                    "query_text": manual_texts[i],
+                    "mapped_manual_unit_match_score": score,
+                    "mapped_manual_unit_accepted": bool(score >= float(min_similarity)),
+                }
+            )
+
+    # Optionally cap globally by top similarity across all rows
+    if global_cap and global_cap > 0 and len(rows) > global_cap:
+        rows.sort(key=lambda r: float(r.get("mapped_manual_unit_match_score", 0.0)), reverse=True)
+        rows = rows[:global_cap]
+
+    return rows
+
+
 def normalize_cycle_frame(df: pd.DataFrame) -> pd.DataFrame:
     """Normalize cycle-level DataFrame schemas for downstream consumers.
 

@@ -1,0 +1,228 @@
+{
+  "results": [
+    {
+      "id": "Q1",
+      "question": "Which session discusses sugary beverages?",
+      "precision_at_k": 0.125,
+      "recall_at_k": 1.0,
+      "grounded_coverage": 0.125,
+      "answer_relevance": 0.8084064722061157,
+      "answer_correctness_sim": 0.5262285470962524,
+      "answer_token_f1": 0.15384615384615385,
+      "retrieved_ids": [
+        "MAN_0058",
+        "MAN_0057",
+        "MAN_0053",
+        "/Users/rhea.chatterjeeyale.edu/rag-audio/audio/de-identified_transcripts/PMHCycle3-de-Identified/PMHCycle3-9.30.19-de_identified/MVI_0251.txt",
+        "/Users/rhea.chatterjeeyale.edu/rag-audio/audio/de-identified_transcripts/PMHCycle3-de-Identified/PMHCycle3-9.30.19-de_identified/MVI_0251.txt",
+        "/Users/rhea.chatterjeeyale.edu/rag-audio/audio/de-identified_transcripts/PMHCycle1-de-Identfied/PMHCycle1-3.4.19-de_identified/MVI_0100.txt",
+        "/Users/rhea.chatterjeeyale.edu/rag-audio/audio/de-identified_transcripts/PMHCycle3-de-Identified/PMHCycle3-9.30.19-de_identified/MVI_0251.txt",
+        "/Users/rhea.chatterjeeyale.edu/rag-audio/audio/de-identified_transcripts/PMHCycle3-de-Identified/PMHCycle3-9.30.19-de_identified/MVI_0251.txt"
+      ],
+      "answer_text": "The transcript shows that Session\u202f2 includes a segment where the facilitator says, \u201cAll right, so today we are going to talk about sugary beverages,\u201d indicating that this session discusses sugary beverages."
+    },
+    {
+      "id": "Q2",
+      "question": "which session introduces the definition of mindfulness?",
+      "precision_at_k": 0.125,
+      "recall_at_k": 1.0,
+      "grounded_coverage": 0.4,
+      "answer_relevance": 0.9244570732116699,
+      "answer_correctness_sim": 0.48926064372062683,
+      "answer_token_f1": 0.5714285714285715,
+      "retrieved_ids": [
+        "MAN_0013",
+        "MAN_0007",
+        "MAN_0164",
+        "MAN_0001",
+        "/Users/rhea.chatterjeeyale.edu/rag-audio/audio/de-identified_transcripts/PMHCycle3-de-Identified/PMHCycle3-3.2.20-de-identified/MVI_0324.txt",
+        "/Users/rhea.chatterjeeyale.edu/rag-audio/audio/de-identified_transcripts/PMHCycle3-de-Identified/PMHCycle3-3.2.20-de-identified/MVI_0324.txt",
+        "/Users/rhea.chatterjeeyale.edu/rag-audio/audio/de-identified_transcripts/PMHCycle3-de-Identified/PMHCycle3-3.2.20-de-identified/MVI_0324.txt",
+        "/Users/rhea.chatterjeeyale.edu/rag-audio/audio/de-identified_transcripts/PMHCycle3-de-Identified/PMHCycle3-3.2.20-de-identified/MVI_0324.txt"
+      ],
+      "answer_text": "The definition of mindfulness is introduced in Session\u202f1."
+    },
+    {
+      "id": "Q3",
+      "question": "During which session do participants discuss food cravings?",
+      "precision_at_k": 0.0,
+      "recall_at_k": 0.0,
+      "grounded_coverage": 0.42857142857142855,
+      "answer_relevance": 0.7935957908630371,
+      "answer_correctness_sim": 0.2871871888637543,
+      "answer_token_f1": 0.125,
+      "retrieved_ids": [
+        "MAN_0295",
+        "MAN_0269",
+        "MAN_0254",
+        "MAN_0277",
+        "/Users/rhea.chatterjeeyale.edu/rag-audio/audio/de-identified_transcripts/PMHCycleX-de_identified/MVI_0329.txt",
+        "/Users/rhea.chatterjeeyale.edu/rag-audio/audio/de-identified_transcripts/PMHCycle1-de-Identfied/PMHCycle1-5.6.19-de_identified/MVI_0160.txt",
+        "/Users/rhea.chatterjeeyale.edu/rag-audio/audio/de-identified_transcripts/PMHCycleX-de_identified/MVI_0329.txt",
+        "/Users/rhea.chatterjeeyale.edu/rag-audio/audio/de-identified_transcripts/PMHCycleX-de_identified/MVI_0329.txt"
+      ],
+      "answer_text": "Participants discuss food cravings during Session 12, which includes a review of food cravings and mindfulness eating."
+    },
+    {
+      "id": "Q4",
+      "question": "During which session do participants complete the singing bowl exercise? ",
+      "precision_at_k": 0.125,
+      "recall_at_k": 1.0,
+      "grounded_coverage": 0.25,
+      "answer_relevance": 0.9082452058792114,
+      "answer_correctness_sim": 0.34130150079727173,
+      "answer_token_f1": 0.4,
+      "retrieved_ids": [
+        "MAN_0145",
+        "MAN_0141",
+        "/Users/rhea.chatterjeeyale.edu/rag-audio/audio/de-identified_transcripts/PMHCycle3-de-Identified/PMHCycle3-11.4.19-de_identified/MVI_0281.txt",
+        "/Users/rhea.chatterjeeyale.edu/rag-audio/audio/de-identified_transcripts/PMHCycle3-de-Identified/PMHCycle3-11.4.19-de_identified/MVI_0281.txt",
+        "/Users/rhea.chatterjeeyale.edu/rag-audio/audio/de-identified_transcripts/PMHCycle3-de-Identified/PMHCycle3-11.4.19-de_identified/MVI_0281.txt",
+        "/Users/rhea.chatterjeeyale.edu/rag-audio/audio/de-identified_transcripts/PMHCycle8-de_identified/10.18 zoom_0.txt",
+        "/Users/rhea.chatterjeeyale.edu/rag-audio/audio/de-identified_transcripts/PMHCycle8-de_identified/10.18 zoom_0.txt",
+        "/Users/rhea.chatterjeeyale.edu/rag-audio/audio/de-identified_transcripts/PMHCycle8-de_identified/10.18 zoom_0.txt"
+      ],
+      "answer_text": "Participants complete the singing bowl exercise during Session\u202f6."
+    },
+    {
+      "id": "Q5",
+      "question": "Are cell phones allowed during the group sessions?",
+      "precision_at_k": 0.125,
+      "recall_at_k": 1.0,
+      "grounded_coverage": 0.5,
+      "answer_relevance": 0.8842474222183228,
+      "answer_correctness_sim": 0.07275323569774628,
+      "answer_token_f1": 0.0,
+      "retrieved_ids": [
+        "MAN_0018",
+        "/Users/rhea.chatterjeeyale.edu/rag-audio/audio/de-identified_transcripts/PMHCycle3-de-Identified/PMHCycle3-9.30.19-de_identified/MVI_0249.txt",
+        "/Users/rhea.chatterjeeyale.edu/rag-audio/audio/de-identified_transcripts/PMHCycle3-de-Identified/PMHCycle3-3.2.20-de-identified/MVI_0326.txt",
+        "/Users/rhea.chatterjeeyale.edu/rag-audio/audio/de-identified_transcripts/PMHCycle3-de-Identified/PMHCycle3-9.23.19-de_identified/MVI_0243.txt",
+        "/Users/rhea.chatterjeeyale.edu/rag-audio/audio/de-identified_transcripts/PMHCycle2-de-identified/PMHCycle2-6.3.19-de_identified/MVI_0169.txt",
+        "/Users/rhea.chatterjeeyale.edu/rag-audio/audio/de-identified_transcripts/PMHCycle2-de-identified/PMHCycle2-6.3.19-de_identified/MVI_0169.txt",
+        "/Users/rhea.chatterjeeyale.edu/rag-audio/audio/de-identified_transcripts/PMHCycle3-de-Identified/PMHCycle3-9.23.19-de_identified/MVI_0243.txt",
+        "/Users/rhea.chatterjeeyale.edu/rag-audio/audio/de-identified_transcripts/PMHCycle3-de-Identified/PMHCycle3-3.2.20-de-identified/MVI_0326.txt"
+      ],
+      "answer_text": "Cell phones are not permitted during the group sessions. Participants are asked to keep phones off or away while the group is in progress."
+    },
+    {
+      "id": "Q6",
+      "question": "What are the key phrases for positive reinforcement?",
+      "precision_at_k": 0.0,
+      "recall_at_k": 0.0,
+      "grounded_coverage": 0.0,
+      "answer_relevance": 0.7996643781661987,
+      "answer_correctness_sim": 0.361028790473938,
+      "answer_token_f1": 0.14634146341463417,
+      "retrieved_ids": [
+        "/Users/rhea.chatterjeeyale.edu/rag-audio/audio/de-identified_transcripts/PMHCycle8-de_identified/10.18 zoom_0.txt",
+        "/Users/rhea.chatterjeeyale.edu/rag-audio/audio/de-identified_transcripts/PMHCycle7-de_identified/6.2 zoom_0.txt",
+        "/Users/rhea.chatterjeeyale.edu/rag-audio/audio/de-identified_transcripts/PMHCycle1-de-Identfied/PMHCycle1-3.25.19-de_identified/MVI_0119.txt",
+        "/Users/rhea.chatterjeeyale.edu/rag-audio/audio/de-identified_transcripts/PMHCycle2-de-identified/PMHCycle2-7.15.19-de_identified/MVI_0210.txt",
+        "/Users/rhea.chatterjeeyale.edu/rag-audio/audio/de-identified_transcripts/PMHCycle1-de-Identfied/PMHCycle1-5.6.19-de_identified/MVI_0161.txt",
+        "/Users/rhea.chatterjeeyale.edu/rag-audio/audio/de-identified_transcripts/PMHCycle1-de-Identfied/PMHCycle1-5.6.19-de_identified/MVI_0161.txt",
+        "/Users/rhea.chatterjeeyale.edu/rag-audio/audio/de-identified_transcripts/PMHCycle2-de-identified/PMHCycle2-7.15.19-de_identified/MVI_0210.txt",
+        "/Users/rhea.chatterjeeyale.edu/rag-audio/audio/de-identified_transcripts/PMHCycle2-de-identified/PMHCycle2-7.1.19-de_identified/MVI_0197.txt"
+      ],
+      "answer_text": "Key phrases that signal positive reinforcement include: \u201cfocus on the positive,\u201d \u201cincrease density of preferred activities,\u201d and generally referencing \u201cpreferred activities\u201d as the target of reinforcement. These phrases highlight the practice of emphasizing and rewarding desired behaviors rather than merely correcting undesired ones."
+    },
+    {
+      "id": "Q7",
+      "question": "How do participants apply mindful eating skills to healthier eating?",
+      "precision_at_k": 0.0,
+      "recall_at_k": 0.0,
+      "grounded_coverage": 0.41237113402061853,
+      "answer_relevance": 0.7952547073364258,
+      "answer_correctness_sim": 0.7562556266784668,
+      "answer_token_f1": 0.12844036697247704,
+      "retrieved_ids": [
+        "MAN_0240",
+        "MAN_0067",
+        "MAN_0165",
+        "MAN_0011",
+        "MAN_0290",
+        "/Users/rhea.chatterjeeyale.edu/rag-audio/audio/de-identified_transcripts/PMHCycle3-de-Identified/PMHCycle3-9.23.19-de_identified/MVI_0244.txt",
+        "/Users/rhea.chatterjeeyale.edu/rag-audio/audio/de-identified_transcripts/PMHCycle3-de-Identified/PMHCycle3-9.23.19-de_identified/MVI_0244.txt",
+        "/Users/rhea.chatterjeeyale.edu/rag-audio/audio/de-identified_transcripts/PMHCycle3-de-Identified/PMHCycle3-9.23.19-de_identified/MVI_0244.txt"
+      ],
+      "answer_text": "Participants put mindful\u2011eating skills into practice by first learning to notice and label their internal signals\u2014such as the seven types of hunger and cravings\u2014and then using that awareness to pause before making food choices.  In sessions they complete a \"Choices\" exercise that guides them to examine the options on the plate, consider how each choice aligns with their hunger, health goals, and values, and select the healthier alternative.  They reinforce these skills with a mindfulness\u2011attitudes checklist (e.g., non\u2011judgment, curiosity) and track their experiences in a food\u2011journal or activity\u2011log, which helps them identify patterns and adjust behavior.  Goal\u2011setting sheets and quick\u2011reference handouts further support the translation of mindful awareness into concrete nutrition goals, leading to more balanced, health\u2011conscious eating."
+    },
+    {
+      "id": "Q8",
+      "question": "What is the STOP skill?",
+      "precision_at_k": 0.0,
+      "recall_at_k": 0.0,
+      "grounded_coverage": 0.0,
+      "answer_relevance": 0.7481974959373474,
+      "answer_correctness_sim": 0.36155965924263,
+      "answer_token_f1": 0.1616161616161616,
+      "retrieved_ids": [
+        "/Users/rhea.chatterjeeyale.edu/rag-audio/audio/de-identified_transcripts/PMHCycle8-de_identified/11.1.txt",
+        "/Users/rhea.chatterjeeyale.edu/rag-audio/audio/de-identified_transcripts/PMHCycle8-de_identified/11.1.txt",
+        "/Users/rhea.chatterjeeyale.edu/rag-audio/audio/de-identified_transcripts/PMHCycle8-de_identified/11.1.txt",
+        "/Users/rhea.chatterjeeyale.edu/rag-audio/audio/de-identified_transcripts/PMHCycle8-de_identified/11.29 zoom_0.txt",
+        "/Users/rhea.chatterjeeyale.edu/rag-audio/audio/de-identified_transcripts/PMHCycle1-de-Identfied/PMHCycle1-5.6.19-de_identified/MVI_0160.txt",
+        "/Users/rhea.chatterjeeyale.edu/rag-audio/audio/de-identified_transcripts/PMHCycle2-de-identified/PMHCycle2-7.15.19-de_identified/MVI_0209.txt",
+        "/Users/rhea.chatterjeeyale.edu/rag-audio/audio/de-identified_transcripts/PMHCycle8-de_identified/11.29 zoom_0.txt",
+        "/Users/rhea.chatterjeeyale.edu/rag-audio/audio/de-identified_transcripts/PMHCycle1-de-Identfied/PMHCycle1-5.6.19-de_identified/MVI_0160.txt"
+      ],
+      "answer_text": "The STOP skill is a brief mindfulness technique used to manage cravings, urges, or stressful thoughts. It involves pausing (Stop), taking a breath, observing what you\u2019re feeling or thinking, and then paying attention before deciding how to act. By slowing down and labeling the experience, you create space to choose a healthier response."
+    },
+    {
+      "id": "Q9",
+      "question": "What protein sources are recommended by the manual?",
+      "precision_at_k": 0.125,
+      "recall_at_k": 1.0,
+      "grounded_coverage": 0.7058823529411765,
+      "answer_relevance": 0.7214250564575195,
+      "answer_correctness_sim": 0.8170466423034668,
+      "answer_token_f1": 0.4444444444444445,
+      "retrieved_ids": [
+        "MAN_0134",
+        "MAN_0135",
+        "/Users/rhea.chatterjeeyale.edu/rag-audio/audio/de-identified_transcripts/PMHCycle7-de_identified/6.9 zoom_0.txt",
+        "/Users/rhea.chatterjeeyale.edu/rag-audio/audio/de-identified_transcripts/PMHCycle4-de-identified/PMHCycle4-5.11.20.txt",
+        "/Users/rhea.chatterjeeyale.edu/rag-audio/audio/de-identified_transcripts/PMHCycle7-de_identified/6.9 zoom_0.txt",
+        "/Users/rhea.chatterjeeyale.edu/rag-audio/audio/de-identified_transcripts/PMHCycle4-de-identified/PMHCycle4-5.11.20.txt",
+        "/Users/rhea.chatterjeeyale.edu/rag-audio/audio/de-identified_transcripts/PMHCycle4-de-identified/PMHCycle4-5.11.20.txt",
+        "/Users/rhea.chatterjeeyale.edu/rag-audio/audio/de-identified_transcripts/PMHCycle7-de_identified/6.23 zoom_0.txt"
+      ],
+      "answer_text": "The manual recommends a variety of protein sources, including lean animal proteins such as fish, chicken, turkey (without skin), eggs, reduced\u2011fat cheeses, and other lean meats, as well as plant\u2011based options like tofu, nuts, dried beans, peas, and other legumes."
+    },
+    {
+      "id": "Q10",
+      "question": "What are some examples of physical activities that participants can do with their family?",
+      "precision_at_k": 0.125,
+      "recall_at_k": 1.0,
+      "grounded_coverage": 0.55,
+      "answer_relevance": 0.7232828736305237,
+      "answer_correctness_sim": 0.590935230255127,
+      "answer_token_f1": 0.24999999999999994,
+      "retrieved_ids": [
+        "MAN_0235",
+        "MAN_0138",
+        "MAN_0162",
+        "MAN_0268",
+        "/Users/rhea.chatterjeeyale.edu/rag-audio/audio/de-identified_transcripts/PMHCycle8-de_identified/11.29 zoom_0.txt",
+        "/Users/rhea.chatterjeeyale.edu/rag-audio/audio/de-identified_transcripts/PMHCycle7-de_identified/6.16 zoom_0.txt",
+        "/Users/rhea.chatterjeeyale.edu/rag-audio/audio/de-identified_transcripts/PMHCycle8-de_identified/11.1.txt",
+        "/Users/rhea.chatterjeeyale.edu/rag-audio/audio/de-identified_transcripts/PMHCycle1-de-Identfied/PMHCycle1-2.25.19-de_identified/MVI_0094.txt"
+      ],
+      "answer_text": "Participants can engage in many family\u2011friendly physical activities such as hiking or taking a walk to the park, swimming, dancing, bowling, cycling, playing kick\u2011ball or baseball, having a race, or simply walking together. These options provide varied intensity levels and can be easily incorporated into weekly SMART or FITT goals."
+    }
+  ],
+  "summary": {
+    "mean_precision_at_k": 0.075,
+    "std_precision_at_k": 0.06123724356957946,
+    "mean_recall_at_k": 0.6,
+    "std_recall_at_k": 0.48989794855663565,
+    "mean_grounded_coverage": 0.33718249155332236,
+    "std_grounded_coverage": 0.2248772980213687,
+    "mean_answer_relevance": 0.8106776475906372,
+    "std_answer_relevance": 0.06931193693032792,
+    "mean_answer_correctness_sim": 0.460355706512928,
+    "std_answer_correctness_sim": 0.21237568951337685,
+    "mean_answer_token_f1": 0.23811171617224428,
+    "std_answer_token_f1": 0.16820099797226884
+  }
+}

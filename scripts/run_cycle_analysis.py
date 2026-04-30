@@ -526,6 +526,17 @@ def write_csv(path: Path, fieldnames: list[str], rows: list[dict[str, Any]]) -> 
             writer.writerow({key: row.get(key, "") for key in fieldnames})
 
 
+def append_csv_rows(path: Path, fieldnames: list[str], rows: list[dict[str, Any]]) -> None:
+    """Append rows to a CSV, writing a header when the file does not exist."""
+    mode = "a" if path.exists() else "w"
+    with open(path, mode, newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        if mode == "w":
+            writer.writeheader()
+        for row in rows:
+            writer.writerow({key: row.get(key, "") for key in fieldnames})
+
+
 def read_csv_rows(path: Path) -> list[dict[str, str]]:
     if not path.exists():
         return []

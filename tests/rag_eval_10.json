@@ -1,0 +1,62 @@
+[
+  {
+    "id": "Q1",
+    "question": "Which session discusses sugary beverages?",
+    "gold_answer": "Session 2",
+    "gold_evidence": ["MAN_0058"]
+  },
+  {
+    "id": "Q2",
+    "question": "which session introduces the definition of mindfulness?",
+    "gold_answer": "Session 1. ",
+    "gold_evidence": ["MAN_0001"]
+  },
+  {
+    "id": "Q3",
+    "question": "During which session do participants discuss food cravings?",
+    "gold_answer": "Session 11",
+    "gold_evidence": ["MAN_0278"]
+  },
+  {
+    "id": "Q4",
+    "question": "During which session do participants complete the singing bowl exercise? ",
+    "gold_answer": "Session 6",
+    "gold_evidence": ["MAN_0145"]
+  },
+  {
+    "id": "Q5",
+    "question": "Are cell phones allowed during the group sessions?",
+    "gold_answer": "No.",
+    "gold_evidence": ["MAN_0018"]
+  },
+  {
+    "id": "Q6",
+    "question": "What are the key phrases for positive reinforcement?",
+    "gold_answer": "Key phrases include 'great job' and 'I appreciate your effort'.",
+    "gold_evidence": ["MAN_0066"]
+  },
+  {
+    "id": "Q7",
+    "question": "How do participants apply mindful eating skills to healthier eating?",
+    "gold_answer": "Participants are encouraged to practice mindful eating by paying attention to their hunger cues and eating slowly.",
+    "gold_evidence": ["WIN_17773", "WIN_17771", "WIN_17769"]
+  },
+  {
+    "id": "Q8",
+    "question": "What is the STOP skill?",
+    "gold_answer": "Stop what you are doing and put things down for a minute. Take a breath. Breathing naturally and normally. Use your breath as a guide. Perhaps introduce a mantra. Observe your thoughts, feelings, and emotions. Pull to the components of your experience; reflect on what is happening for you in that moment. Noticing that the things you are experiencing in that moment is not permanent. Situations, moods, thoughts, are not permanent. Proceeding with something that will support you in the moment. Making a conscious choice to do something that will serve you.",
+    "gold_evidence": ["MAN_0044"]
+  },
+  {
+    "id": "Q9",
+    "question": "What protein sources are recommended by the manual?",
+    "gold_answer": "Protein Examples: Fish, chicken, turkey, tofu, nuts, dried beans and peas, eggs",
+    "gold_evidence": ["MAN_0134"]
+  },
+  {
+    "id": "Q10",
+    "question": "What are some examples of physical activities that participants can do with their family?",
+    "gold_answer": "Walk to park Take a hike Go for a bicycle ride Go bowling Dance Play a kick ball/ baseball game Have a race ",
+    "gold_evidence": ["MAN_0138"]
+  }
+]
