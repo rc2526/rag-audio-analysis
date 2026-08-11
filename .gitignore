@@ -3,10 +3,13 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .venv/
+.ipynb_checkpoints/
+*.log
+*.bak
+*.tgz
+*.tar.gz
 
-data/derived/
-data/templates/
-app/streamlit.log
+data/
 
 *.pyc
 *.pyo
